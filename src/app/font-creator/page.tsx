@@ -27,7 +27,6 @@ export default function FontCreatorPage() {
     Array.from(glyphs.entries()).map(([k, v]) => [k, v.preview])
   );
 
-  // Build the full character list for navigation
   const allChars = [
     ...GLYPH_SETS.flatMap((s) => s.chars),
     ...EXTRA_GLYPH_SETS.filter((s) => enabledSets.includes(s.label)).flatMap((s) => s.chars),
@@ -70,11 +69,7 @@ export default function FontCreatorPage() {
 
   const handleRemoveCustomGlyph = useCallback((char: string) => {
     setCustomGlyphs((prev) => prev.filter((c) => c !== char));
-    setGlyphs((prev) => {
-      const next = new Map(prev);
-      next.delete(char);
-      return next;
-    });
+    setGlyphs((prev) => { const n = new Map(prev); n.delete(char); return n; });
   }, []);
 
   const handleImageExtract = useCallback(
@@ -94,7 +89,6 @@ export default function FontCreatorPage() {
   const handleFontUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const buffer = ev.target?.result as ArrayBuffer;
@@ -106,28 +100,21 @@ export default function FontCreatorPage() {
         const allTargetChars = allChars.join("");
         const canvas = document.createElement("canvas");
         const size = 600;
-        canvas.width = size;
-        canvas.height = size;
+        canvas.width = size; canvas.height = size;
         const ctx = canvas.getContext("2d")!;
-
         const newGlyphs = new Map<string, GlyphEntry>();
 
         for (const char of allTargetChars) {
           const glyph = font.charToGlyph(char);
           if (!glyph || glyph.index === 0) continue;
-
           ctx.clearRect(0, 0, size, size);
           ctx.fillStyle = "#ffffff";
           ctx.fillRect(0, 0, size, size);
-
-          const fontSize = size * 0.55;
-          const path = glyph.getPath(size * 0.15, size * 0.72, fontSize);
+          const path = glyph.getPath(size * 0.15, size * 0.72, size * 0.55);
           path.fill = "#0a0a0a";
           path.draw(ctx);
-
           newGlyphs.set(char, { strokes: [], preview: canvas.toDataURL("image/png") });
         }
-
         setGlyphs(newGlyphs);
       } catch {
         alert("Could not parse font file. Supported: .otf, .ttf, .woff");
@@ -140,77 +127,61 @@ export default function FontCreatorPage() {
   const activeIdx = allChars.indexOf(activeGlyph);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[var(--background)]">
+    <div className="h-screen flex flex-col overflow-hidden bg-[var(--background)]">
       {/* Top bar */}
-      <header className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] bg-[var(--surface)]">
-        <Link
-          href="/"
-          className="w-8 h-8 rounded-lg hover:bg-[var(--surface-hover)] flex items-center justify-center text-[var(--muted)]"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
+      <header className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)] flex-shrink-0">
+        <Link href="/"
+          className="w-7 h-7 rounded-lg hover:bg-[var(--surface-hover)] flex items-center justify-center text-[var(--muted)]">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
         </Link>
 
-        <input
-          type="text"
-          value={fontName}
-          onChange={(e) => setFontName(e.target.value)}
-          className="text-base font-semibold bg-transparent border-none outline-none min-w-0 px-1"
-        />
+        <div className="flex items-center gap-2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--accent)]">
+            <polyline points="4 7 4 4 20 4 20 7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" />
+          </svg>
+          <input type="text" value={fontName} onChange={(e) => setFontName(e.target.value)}
+            className="text-sm font-semibold bg-transparent border-none outline-none min-w-0 px-0.5" />
+        </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <input
-            ref={fontFileRef}
-            type="file"
-            accept=".otf,.ttf,.woff,.woff2"
-            onChange={handleFontUpload}
-            className="hidden"
-          />
-          <button
-            onClick={() => fontFileRef.current?.click()}
-            className="px-3 py-1.5 text-xs border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-          >
+        <div className="ml-auto flex items-center gap-1.5">
+          <input ref={fontFileRef} type="file" accept=".otf,.ttf,.woff,.woff2" onChange={handleFontUpload} className="hidden" />
+          <button onClick={() => fontFileRef.current?.click()}
+            className="px-2.5 py-1 text-[11px] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
             Import Font
           </button>
-          <button
-            onClick={() => setShowExtractor(true)}
-            className="px-3 py-1.5 text-xs border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-          >
-            Extract from Image
+          <button onClick={() => setShowExtractor(true)}
+            className="px-2.5 py-1 text-[11px] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></svg>
+            Extract Image
           </button>
-          <button
-            onClick={() => setShowExport(true)}
-            disabled={glyphs.size === 0}
-            className="px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors font-medium disabled:opacity-40"
-          >
+          <button onClick={() => setShowExport(true)} disabled={glyphs.size === 0}
+            className="px-2.5 py-1 text-[11px] bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors font-medium disabled:opacity-40 flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
             Export
           </button>
         </div>
       </header>
 
       {/* Tab bar */}
-      <div className="flex gap-0 px-4 border-b border-[var(--border)] bg-[var(--surface)]">
+      <div className="flex gap-0 px-4 border-b border-[var(--border)] bg-[var(--surface)] flex-shrink-0">
         {(["draw", "preview"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm transition-colors relative ${
-              tab === t ? "text-[var(--foreground)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
-            }`}
-          >
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-3 py-1.5 text-xs transition-colors relative ${
+              tab === t ? "text-[var(--foreground)] font-medium" : "text-[var(--muted)] hover:text-[var(--foreground)]"
+            }`}>
             {t === "draw" ? "Draw Glyphs" : "Preview"}
             {tab === t && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent)]" />}
           </button>
         ))}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Content - fills remaining height, no page scroll */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {tab === "draw" && (
           <>
-            {/* Sidebar */}
-            <aside className="w-72 border-r border-[var(--border)] p-3 overflow-auto bg-[var(--surface)] flex-shrink-0">
+            {/* Sidebar - scrolls independently */}
+            <aside className="w-64 border-r border-[var(--border)] bg-[var(--surface)] flex-shrink-0 flex flex-col overflow-hidden">
               <GlyphGrid
                 completedGlyphs={completedGlyphs}
                 activeGlyph={activeGlyph}
@@ -224,11 +195,11 @@ export default function FontCreatorPage() {
               />
             </aside>
 
-            {/* Drawing area */}
-            <main className="flex-1 flex flex-col items-center justify-center gap-5 p-6 overflow-auto">
+            {/* Drawing area - centered, no scroll */}
+            <main className="flex-1 flex flex-col items-center justify-center gap-4 p-4 min-h-0">
               <div className="text-center">
-                <h2 className="text-5xl font-bold mb-1">{activeGlyph}</h2>
-                <p className="text-xs text-[var(--muted)]">
+                <h2 className="text-4xl font-bold leading-none">{activeGlyph}</h2>
+                <p className="text-[10px] text-[var(--muted)] mt-0.5 font-mono">
                   U+{activeGlyph.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}
                 </p>
               </div>
@@ -243,27 +214,23 @@ export default function FontCreatorPage() {
               />
 
               {/* Navigation */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => {
-                    if (activeIdx > 0) setActiveGlyph(allChars[activeIdx - 1]);
-                  }}
+                  onClick={() => { if (activeIdx > 0) setActiveGlyph(allChars[activeIdx - 1]); }}
                   disabled={activeIdx <= 0}
-                  className="px-4 py-1.5 text-sm border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-30"
-                >
-                  &larr; Prev
+                  className="p-1.5 rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-20"
+                  title="Previous glyph">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
                 </button>
-                <span className="text-xs text-[var(--muted)]">
+                <span className="text-[11px] text-[var(--muted)] min-w-[60px] text-center">
                   {activeIdx + 1} / {allChars.length}
                 </span>
                 <button
-                  onClick={() => {
-                    if (activeIdx < allChars.length - 1) setActiveGlyph(allChars[activeIdx + 1]);
-                  }}
+                  onClick={() => { if (activeIdx < allChars.length - 1) setActiveGlyph(allChars[activeIdx + 1]); }}
                   disabled={activeIdx >= allChars.length - 1}
-                  className="px-4 py-1.5 text-sm bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors font-medium disabled:opacity-30"
-                >
-                  Next &rarr;
+                  className="p-1.5 rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-20"
+                  title="Next glyph">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg>
                 </button>
               </div>
             </main>
@@ -274,7 +241,6 @@ export default function FontCreatorPage() {
           <main className="flex-1 p-8 overflow-auto">
             <div className="max-w-3xl mx-auto">
               <FontPreview glyphPreviews={glyphPreviews} />
-
               {glyphs.size > 0 && (
                 <div className="mt-8">
                   <h3 className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider mb-3">
@@ -282,21 +248,16 @@ export default function FontCreatorPage() {
                   </h3>
                   <div className="flex flex-wrap gap-2">
                     {Array.from(glyphs.entries()).map(([char, entry]) => (
-                      <div
-                        key={char}
+                      <div key={char}
                         className="w-14 h-14 border border-[var(--border)] rounded-lg overflow-hidden bg-white flex items-center justify-center cursor-pointer hover:border-[var(--accent)] transition-colors group relative"
-                        onClick={() => { setActiveGlyph(char); setTab("draw"); }}
-                      >
+                        onClick={() => { setActiveGlyph(char); setTab("draw"); }}>
                         <img src={entry.preview} alt={char} className="w-full h-full object-contain p-1" />
-                        <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] text-center py-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {char}
-                        </span>
+                        <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] text-center py-0.5 opacity-0 group-hover:opacity-100 transition-opacity">{char}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-
               {glyphs.size === 0 && (
                 <div className="text-center py-20 text-[var(--muted)]">
                   No glyphs yet. Start drawing or import to preview.
@@ -310,7 +271,6 @@ export default function FontCreatorPage() {
       {showExtractor && (
         <ImageExtractor onExtract={handleImageExtract} onClose={() => setShowExtractor(false)} />
       )}
-
       {showExport && (
         <ExportDialog fontName={fontName} glyphs={glyphs} onClose={() => setShowExport(false)} />
       )}
