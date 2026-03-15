@@ -5,6 +5,7 @@ import {
   Layers, Box, FileCode, Hash, Image as ImageIcon, Pipette,
   Table, Square, Clock, Timer, FileText, TextCursorInput,
   FileImage, Compass, Scaling, Send, SwatchBook, Grid2x2,
+  FileUp, Music, LayoutGrid, Ruler, Search, Sparkles as SparklesIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -286,5 +287,47 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     href: "/pixel-font-builder",
     audience: "gamedev",
     icon: <Grid2x2 size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "PDF Toolkit",
+    description: "Merge, split, rotate, reorder, and extract PDF pages in the browser",
+    href: "/pdf-toolkit",
+    audience: "content",
+    icon: <FileUp size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Audio Trimmer",
+    description: "Trim audio files with waveform visualization, fade in/out, and WAV export",
+    href: "/audio-trimmer",
+    audience: "content",
+    icon: <Music size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "CSS Layout Builder",
+    description: "Visual CSS Grid and Flexbox builder with live preview and code output",
+    href: "/css-layout-builder",
+    audience: "developer",
+    icon: <LayoutGrid size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Unit Converter",
+    description: "Convert between 100+ units across length, weight, temperature, data, CSS, and more",
+    href: "/unit-converter",
+    audience: "developer",
+    icon: <Ruler size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Icon Browser",
+    description: "Browse, search, and copy 1400+ Lucide icons as SVG, JSX, or React imports",
+    href: "/icon-browser",
+    audience: "design",
+    icon: <Search size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Sprite Outline & Glow",
+    description: "Add outline, glow, shadow, and flash effects to sprites for 2D games",
+    href: "/sprite-outline",
+    audience: "gamedev",
+    icon: <SparklesIcon size={28} strokeWidth={1.5} />,
   },
 ];
