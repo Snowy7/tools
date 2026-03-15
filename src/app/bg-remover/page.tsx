@@ -429,27 +429,87 @@ export default function BackgroundRemoverPage() {
         const modelId = modelMap[eng];
         const engineName = ENGINES.find((e) => e.id === eng)?.name ?? eng;
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Loading ${engineName}...`, progress: 10 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Loading Transformers.js library...`, progress: 5 } : prev);
 
         const { pipeline, env } = await import("@huggingface/transformers");
         env.allowLocalModels = false;
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Downloading model weights...", progress: 25 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Downloading ${engineName} model (this may take a minute)...`, progress: 15 } : prev);
 
-        const segmenter = await pipeline("background-removal", modelId, {
-          device: "webgpu" in navigator ? "webgpu" : "wasm",
-        });
+        // Try webgpu first, fall back to wasm if it fails
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let segmenter: any;
+        const preferredDevice = "webgpu" in navigator ? "webgpu" : "wasm";
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Running AI model...", progress: 60 } : prev);
+        try {
+          segmenter = await pipeline("background-removal", modelId, {
+            device: preferredDevice,
+          });
+        } catch (webgpuErr) {
+          if (preferredDevice === "webgpu") {
+            console.warn(`WebGPU pipeline failed for ${modelId}, falling back to WASM:`, webgpuErr);
+            setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `WebGPU unavailable, retrying ${engineName} with WASM...`, progress: 20 } : prev);
+            try {
+              segmenter = await pipeline("background-removal", modelId, {
+                device: "wasm",
+              });
+            } catch (wasmErr) {
+              console.error(`WASM pipeline also failed for ${modelId}:`, wasmErr);
+              throw new Error(
+                `Failed to load ${engineName} model. This model may not be compatible with your browser. Try the IMGLY engine instead.`
+              );
+            }
+          } else {
+            throw new Error(
+              `Failed to load ${engineName} model. This model may not be compatible with your browser. Try the IMGLY engine instead.`
+            );
+          }
+        }
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Running ${engineName} AI model...`, progress: 55 } : prev);
 
         const imageUrl = URL.createObjectURL(file);
-        const result = await segmenter(imageUrl);
+        let result: any;
+        try {
+          result = await segmenter(imageUrl);
+        } catch (inferenceErr) {
+          URL.revokeObjectURL(imageUrl);
+          console.error(`Inference failed for ${modelId}:`, inferenceErr);
+          throw new Error(
+            `${engineName} failed during processing. Try the IMGLY engine for more reliable results.`
+          );
+        }
         URL.revokeObjectURL(imageUrl);
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Generating result...", progress: 90 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Generating result...", progress: 85 } : prev);
 
-        // result is a RawImage — convert to blob
-        resultBlob = await (result as any).toBlob();
+        // Convert result to Blob — handle different output formats
+        try {
+          resultBlob = await (result as any).toBlob();
+        } catch {
+          // Fallback: if toBlob doesn't exist, convert via canvas
+          try {
+            const canvas = document.createElement("canvas");
+            const rawImg = result as any;
+            canvas.width = rawImg.width;
+            canvas.height = rawImg.height;
+            const ctx = canvas.getContext("2d")!;
+            const imgData = ctx.createImageData(rawImg.width, rawImg.height);
+            imgData.data.set(rawImg.data);
+            ctx.putImageData(imgData, 0, 0);
+            resultBlob = await new Promise<Blob>((resolve, reject) => {
+              canvas.toBlob(
+                (b) => (b ? resolve(b) : reject(new Error("Canvas toBlob returned null"))),
+                "image/png"
+              );
+            });
+          } catch (canvasErr) {
+            console.error("Canvas fallback also failed:", canvasErr);
+            throw new Error(
+              `${engineName} produced output that could not be converted to an image. Try the IMGLY engine instead.`
+            );
+          }
+        }
       }
 
       const elapsed = Math.round((performance.now() - startTime) / 100) / 10;

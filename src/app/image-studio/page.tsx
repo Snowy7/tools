@@ -114,6 +114,8 @@ interface FilterPreset {
   adjustments: Partial<AdjustmentValues>;
 }
 
+type RenderQuality = "preview" | "full";
+
 // ── Defaults ───────────────────────────────────────────────────────────────────
 
 const DEFAULT_ADJUSTMENTS: AdjustmentValues = {
@@ -263,117 +265,232 @@ const FILTER_PRESETS: FilterPreset[] = [
   },
 ];
 
+// ── Preview resolution cap ────────────────────────────────────────────────────
+
+const PREVIEW_MAX_DIMENSION = 800;
+
 // ── Pixel Manipulation Helpers ─────────────────────────────────────────────────
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
 }
 
-function applyExposure(data: Uint8ClampedArray, exposure: number): void {
-  if (exposure === 0) return;
-  const factor = Math.pow(2, exposure / 50);
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = clamp(data[i] * factor, 0, 255);
-    data[i + 1] = clamp(data[i + 1] * factor, 0, 255);
-    data[i + 2] = clamp(data[i + 2] * factor, 0, 255);
-  }
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.substring(0, 2), 16),
+    parseInt(h.substring(2, 4), 16),
+    parseInt(h.substring(4, 6), 16),
+  ];
 }
 
-function applyTemperature(data: Uint8ClampedArray, temp: number): void {
-  if (temp === 0) return;
-  const shift = temp * 1.2;
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = clamp(data[i] + shift, 0, 255);
-    data[i + 2] = clamp(data[i + 2] - shift, 0, 255);
-  }
-}
+// ── Single-pass pixel processing ──────────────────────────────────────────────
+// Batches exposure, temperature, tint, highlights/shadows/whites/blacks,
+// vibrance, color balance, split toning, grain, posterize, and vignette
+// into ONE loop over the pixel data instead of 10+ separate loops.
 
-function applyTint(data: Uint8ClampedArray, tint: number): void {
-  if (tint === 0) return;
-  const shift = tint * 0.8;
-  for (let i = 0; i < data.length; i += 4) {
-    data[i + 1] = clamp(data[i + 1] - shift, 0, 255);
-  }
-}
-
-function applyHighlightsShadows(
+function processPixels(
   data: Uint8ClampedArray,
-  highlights: number,
-  shadows: number,
-  whites: number,
-  blacks: number
+  width: number,
+  height: number,
+  adj: AdjustmentValues,
+  eff: EffectValues,
+  col: ColorValues
 ): void {
-  if (highlights === 0 && shadows === 0 && whites === 0 && blacks === 0) return;
-  for (let i = 0; i < data.length; i += 4) {
-    const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
-    const lumNorm = lum / 255;
+  // Pre-compute flags
+  const hasExposure = adj.exposure !== 0;
+  const hasTemp = adj.temperature !== 0;
+  const hasTint = adj.tint !== 0;
+  const hasHighlights = adj.highlights !== 0;
+  const hasShadows = adj.shadows !== 0;
+  const hasWhites = adj.whites !== 0;
+  const hasBlacks = adj.blacks !== 0;
+  const hasHSB = hasHighlights || hasShadows || hasWhites || hasBlacks;
+  const hasVibrance = adj.vibrance !== 0;
+  const hasColorBalance =
+    col.shadowR !== 0 || col.shadowG !== 0 || col.shadowB !== 0 ||
+    col.midtoneR !== 0 || col.midtoneG !== 0 || col.midtoneB !== 0 ||
+    col.highlightR !== 0 || col.highlightG !== 0 || col.highlightB !== 0;
+  const hasSplitToning = true; // always lightweight, skip check is cheap
+  const hasGrain = eff.grain !== 0;
+  const hasPosterize = eff.posterize < 32;
+  const hasVignette = eff.vignette !== 0;
 
-    // Shadows affect dark pixels (lum < 0.5)
-    if (lumNorm < 0.5) {
-      const weight = 1 - lumNorm * 2;
-      const shift = shadows * weight * 0.8;
-      data[i] = clamp(data[i] + shift, 0, 255);
-      data[i + 1] = clamp(data[i + 1] + shift, 0, 255);
-      data[i + 2] = clamp(data[i + 2] + shift, 0, 255);
-    }
+  // Early exit if nothing to do
+  if (
+    !hasExposure && !hasTemp && !hasTint && !hasHSB && !hasVibrance &&
+    !hasColorBalance && !hasGrain && !hasPosterize && !hasVignette
+  ) {
+    // Check split toning - skip if default colors
+    const [sr, sg, sb] = hexToRgb(col.splitShadowColor);
+    const [hr, hg, hb] = hexToRgb(col.splitHighlightColor);
+    const splitHasEffect = (sr !== 0 || sg !== 0 || sb !== 68) || (hr !== 255 || hg !== 255 || hb !== 204);
+    if (!splitHasEffect) return;
+  }
 
-    // Highlights affect bright pixels (lum > 0.5)
-    if (lumNorm > 0.5) {
-      const weight = (lumNorm - 0.5) * 2;
-      const shift = highlights * weight * 0.8;
-      data[i] = clamp(data[i] + shift, 0, 255);
-      data[i + 1] = clamp(data[i + 1] + shift, 0, 255);
-      data[i + 2] = clamp(data[i + 2] + shift, 0, 255);
-    }
+  // Pre-compute values
+  const exposureFactor = hasExposure ? Math.pow(2, adj.exposure / 50) : 1;
+  const tempShift = hasTemp ? adj.temperature * 1.2 : 0;
+  const tintShift = hasTint ? adj.tint * 0.8 : 0;
+  const vibranceAmt = hasVibrance ? adj.vibrance / 100 : 0;
 
-    // Whites lift bright end
-    if (lumNorm > 0.75) {
-      const weight = (lumNorm - 0.75) * 4;
-      const shift = whites * weight * 0.6;
-      data[i] = clamp(data[i] + shift, 0, 255);
-      data[i + 1] = clamp(data[i + 1] + shift, 0, 255);
-      data[i + 2] = clamp(data[i + 2] + shift, 0, 255);
-    }
+  // Split toning pre-compute
+  const [splitSR, splitSG, splitSB] = hexToRgb(col.splitShadowColor);
+  const [splitHR, splitHG, splitHB] = hexToRgb(col.splitHighlightColor);
+  const splitBal = col.splitBalance / 100;
+  const splitStrength = 0.15;
 
-    // Blacks lift dark end
-    if (lumNorm < 0.25) {
-      const weight = 1 - lumNorm * 4;
-      const shift = blacks * weight * 0.6;
-      data[i] = clamp(data[i] + shift, 0, 255);
-      data[i + 1] = clamp(data[i + 1] + shift, 0, 255);
-      data[i + 2] = clamp(data[i + 2] + shift, 0, 255);
+  // Posterize pre-compute
+  const posterizeStep = hasPosterize ? 256 / eff.posterize : 0;
+
+  // Grain pre-compute
+  const grainIntensity = hasGrain ? eff.grain * 0.8 : 0;
+
+  // Vignette pre-compute
+  const cx = width / 2;
+  const cy = height / 2;
+  const vigStrength = hasVignette ? eff.vignette / 100 : 0;
+  const vigRound = eff.vignetteRoundness / 100;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      let r = data[i], g = data[i + 1], b = data[i + 2];
+
+      // Exposure
+      if (hasExposure) {
+        r *= exposureFactor;
+        g *= exposureFactor;
+        b *= exposureFactor;
+      }
+
+      // Temperature
+      if (hasTemp) {
+        r += tempShift;
+        b -= tempShift;
+      }
+
+      // Tint
+      if (hasTint) {
+        g -= tintShift;
+      }
+
+      // Highlights / Shadows / Whites / Blacks
+      if (hasHSB) {
+        const lum = (r + g + b) / 3;
+        const lumNorm = lum / 255;
+
+        if (hasShadows && lumNorm < 0.5) {
+          const weight = 1 - lumNorm * 2;
+          const shift = adj.shadows * weight * 0.8;
+          r += shift; g += shift; b += shift;
+        }
+        if (hasHighlights && lumNorm > 0.5) {
+          const weight = (lumNorm - 0.5) * 2;
+          const shift = adj.highlights * weight * 0.8;
+          r += shift; g += shift; b += shift;
+        }
+        if (hasWhites && lumNorm > 0.75) {
+          const weight = (lumNorm - 0.75) * 4;
+          const shift = adj.whites * weight * 0.6;
+          r += shift; g += shift; b += shift;
+        }
+        if (hasBlacks && lumNorm < 0.25) {
+          const weight = 1 - lumNorm * 4;
+          const shift = adj.blacks * weight * 0.6;
+          r += shift; g += shift; b += shift;
+        }
+      }
+
+      // Vibrance
+      if (hasVibrance) {
+        const mx = Math.max(r, g, b);
+        const mn = Math.min(r, g, b);
+        const sat = mx === 0 ? 0 : (mx - mn) / mx;
+        const boost = vibranceAmt * (1 - sat) * 0.5;
+        const avg = (r + g + b) / 3;
+        r += (r - avg) * boost;
+        g += (g - avg) * boost;
+        b += (b - avg) * boost;
+      }
+
+      // Color Balance
+      if (hasColorBalance) {
+        const lum = (r + g + b) / 3 / 255;
+        const sw = clamp(1 - lum * 3, 0, 1);
+        const mw = clamp(1 - Math.abs(lum - 0.5) * 2.5, 0, 1);
+        const hw = clamp((lum - 0.67) * 3, 0, 1);
+        r += col.shadowR * sw * 1.5 + col.midtoneR * mw * 1.5 + col.highlightR * hw * 1.5;
+        g += col.shadowG * sw * 1.5 + col.midtoneG * mw * 1.5 + col.highlightG * hw * 1.5;
+        b += col.shadowB * sw * 1.5 + col.midtoneB * mw * 1.5 + col.highlightB * hw * 1.5;
+      }
+
+      // Split Toning
+      if (hasSplitToning) {
+        const lum = (r + g + b) / 3 / 255;
+        const shadowWeight = clamp((1 - lum) * (1 - splitBal) * 2, 0, 1) * splitStrength;
+        const highlightWeight = clamp(lum * splitBal * 2, 0, 1) * splitStrength;
+        r += (splitSR - 128) * shadowWeight + (splitHR - 128) * highlightWeight;
+        g += (splitSG - 128) * shadowWeight + (splitHG - 128) * highlightWeight;
+        b += (splitSB - 128) * shadowWeight + (splitHB - 128) * highlightWeight;
+      }
+
+      // Posterize
+      if (hasPosterize) {
+        r = Math.round(r / posterizeStep) * posterizeStep;
+        g = Math.round(g / posterizeStep) * posterizeStep;
+        b = Math.round(b / posterizeStep) * posterizeStep;
+      }
+
+      // Grain
+      if (hasGrain) {
+        const noise = (Math.random() - 0.5) * grainIntensity;
+        r += noise; g += noise; b += noise;
+      }
+
+      // Vignette
+      if (hasVignette) {
+        const dx = (x - cx) / cx;
+        const dy = (y - cy) / cy;
+        const circDist = Math.sqrt(dx * dx + dy * dy);
+        const rectDist = Math.max(Math.abs(dx), Math.abs(dy));
+        const dist = vigRound * circDist + (1 - vigRound) * rectDist;
+        const falloff = 1 - Math.pow(clamp(dist, 0, 1), 2) * vigStrength;
+        r *= falloff; g *= falloff; b *= falloff;
+      }
+
+      // Clamp once at the end
+      data[i] = r < 0 ? 0 : r > 255 ? 255 : r;
+      data[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+      data[i + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
     }
   }
 }
 
-function applyVibrance(data: Uint8ClampedArray, vibrance: number): void {
-  if (vibrance === 0) return;
-  const amt = vibrance / 100;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i],
-      g = data[i + 1],
-      b = data[i + 2];
-    const mx = Math.max(r, g, b);
-    const mn = Math.min(r, g, b);
-    const sat = mx === 0 ? 0 : (mx - mn) / mx;
-    const boost = amt * (1 - sat) * 0.5;
-    const avg = (r + g + b) / 3;
-    data[i] = clamp(r + (r - avg) * boost, 0, 255);
-    data[i + 1] = clamp(g + (g - avg) * boost, 0, 255);
-    data[i + 2] = clamp(b + (b - avg) * boost, 0, 255);
-  }
-}
+// ── Convolution helpers (clarity & sharpness) ─────────────────────────────────
+// These are O(w*h*kernel) so they get special treatment:
+// - Skipped entirely when value is 0
+// - Use radius=1 in preview mode, radius=2 in full mode
+// - Reuse a pre-allocated buffer when possible
 
 function applyClarity(
   srcData: Uint8ClampedArray,
   width: number,
   height: number,
-  clarity: number
-): void {
-  if (clarity === 0) return;
+  clarity: number,
+  copyBuffer: Uint8ClampedArray | null,
+  radius: number
+): Uint8ClampedArray | null {
+  if (clarity === 0) return copyBuffer;
   const amt = clarity / 100;
-  const copy = new Uint8ClampedArray(srcData);
-  const radius = 2;
+  // Reuse buffer if correct size, otherwise allocate
+  let copy: Uint8ClampedArray;
+  if (copyBuffer && copyBuffer.length === srcData.length) {
+    copy = copyBuffer;
+    copy.set(srcData);
+  } else {
+    copy = new Uint8ClampedArray(srcData);
+  }
   for (let y = radius; y < height - radius; y++) {
     for (let x = radius; x < width - radius; x++) {
       const idx = (y * width + x) * 4;
@@ -393,18 +510,25 @@ function applyClarity(
       }
     }
   }
+  return copy;
 }
 
 function applySharpness(
   srcData: Uint8ClampedArray,
   width: number,
   height: number,
-  sharpness: number
-): void {
-  if (sharpness === 0) return;
+  sharpness: number,
+  copyBuffer: Uint8ClampedArray | null
+): Uint8ClampedArray | null {
+  if (sharpness === 0) return copyBuffer;
   const amt = sharpness / 100;
-  const copy = new Uint8ClampedArray(srcData);
-  // Simple sharpen kernel
+  let copy: Uint8ClampedArray;
+  if (copyBuffer && copyBuffer.length === srcData.length) {
+    copy = copyBuffer;
+    copy.set(srcData);
+  } else {
+    copy = new Uint8ClampedArray(srcData);
+  }
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const idx = (y * width + x) * 4;
@@ -423,49 +547,10 @@ function applySharpness(
       }
     }
   }
+  return copy;
 }
 
-function applyGrain(data: Uint8ClampedArray, grain: number): void {
-  if (grain === 0) return;
-  const intensity = grain * 0.8;
-  for (let i = 0; i < data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * intensity;
-    data[i] = clamp(data[i] + noise, 0, 255);
-    data[i + 1] = clamp(data[i + 1] + noise, 0, 255);
-    data[i + 2] = clamp(data[i + 2] + noise, 0, 255);
-  }
-}
-
-function applyVignette(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  vignette: number,
-  roundness: number
-): void {
-  if (vignette === 0) return;
-  const cx = width / 2;
-  const cy = height / 2;
-  const maxDist = Math.sqrt(cx * cx + cy * cy);
-  const strength = vignette / 100;
-  const round = roundness / 100;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const dx = (x - cx) / cx;
-      const dy = (y - cy) / cy;
-      // Blend between rectangular and circular distance based on roundness
-      const circDist = Math.sqrt(dx * dx + dy * dy);
-      const rectDist = Math.max(Math.abs(dx), Math.abs(dy));
-      const dist = round * circDist + (1 - round) * rectDist;
-      const falloff = 1 - Math.pow(clamp(dist, 0, 1), 2) * strength;
-      const idx = (y * width + x) * 4;
-      data[idx] = clamp(data[idx] * falloff, 0, 255);
-      data[idx + 1] = clamp(data[idx + 1] * falloff, 0, 255);
-      data[idx + 2] = clamp(data[idx + 2] * falloff, 0, 255);
-    }
-  }
-}
+// ── Canvas-level effects ──────────────────────────────────────────────────────
 
 function applyPixelate(
   ctx: CanvasRenderingContext2D,
@@ -475,7 +560,6 @@ function applyPixelate(
 ): void {
   if (pixelate <= 1) return;
   const size = Math.round(pixelate);
-  // Downscale then upscale
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = Math.max(1, Math.ceil(width / size));
   tempCanvas.height = Math.max(1, Math.ceil(height / size));
@@ -488,27 +572,25 @@ function applyPixelate(
   ctx.imageSmoothingEnabled = true;
 }
 
-function applyPosterize(data: Uint8ClampedArray, levels: number): void {
-  if (levels >= 32) return;
-  const step = 256 / levels;
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = Math.round(data[i] / step) * step;
-    data[i + 1] = Math.round(data[i + 1] / step) * step;
-    data[i + 2] = Math.round(data[i + 2] / step) * step;
-  }
-}
-
 function applyGlow(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
-  glow: number
-): void {
-  if (glow === 0) return;
-  const tempCanvas = document.createElement("canvas");
-  tempCanvas.width = width;
-  tempCanvas.height = height;
+  glow: number,
+  cachedGlowCanvas: HTMLCanvasElement | null
+): HTMLCanvasElement | null {
+  if (glow === 0) return cachedGlowCanvas;
+  // Reuse cached glow canvas if dimensions match
+  let tempCanvas: HTMLCanvasElement;
+  if (cachedGlowCanvas && cachedGlowCanvas.width === width && cachedGlowCanvas.height === height) {
+    tempCanvas = cachedGlowCanvas;
+  } else {
+    tempCanvas = document.createElement("canvas");
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+  }
   const tempCtx = tempCanvas.getContext("2d")!;
+  tempCtx.clearRect(0, 0, width, height);
   tempCtx.filter = `blur(${glow * 0.3}px) brightness(1.2)`;
   tempCtx.drawImage(ctx.canvas, 0, 0);
   ctx.globalAlpha = glow / 200;
@@ -516,102 +598,7 @@ function applyGlow(
   ctx.drawImage(tempCanvas, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
-}
-
-function applyColorBalance(
-  data: Uint8ClampedArray,
-  shadowR: number,
-  shadowG: number,
-  shadowB: number,
-  midR: number,
-  midG: number,
-  midB: number,
-  highR: number,
-  highG: number,
-  highB: number
-): void {
-  const noShadow = shadowR === 0 && shadowG === 0 && shadowB === 0;
-  const noMid = midR === 0 && midG === 0 && midB === 0;
-  const noHigh = highR === 0 && highG === 0 && highB === 0;
-  if (noShadow && noMid && noHigh) return;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const lum = (data[i] + data[i + 1] + data[i + 2]) / 3 / 255;
-
-    // Shadow range 0-0.33
-    const sw = clamp(1 - lum * 3, 0, 1);
-    // Midtone range 0.17 - 0.83
-    const mw = 1 - Math.abs(lum - 0.5) * 2.5;
-    const midWeight = clamp(mw, 0, 1);
-    // Highlight range 0.67 - 1
-    const hw = clamp((lum - 0.67) * 3, 0, 1);
-
-    data[i] = clamp(
-      data[i] + shadowR * sw * 1.5 + midR * midWeight * 1.5 + highR * hw * 1.5,
-      0,
-      255
-    );
-    data[i + 1] = clamp(
-      data[i + 1] +
-        shadowG * sw * 1.5 +
-        midG * midWeight * 1.5 +
-        highG * hw * 1.5,
-      0,
-      255
-    );
-    data[i + 2] = clamp(
-      data[i + 2] +
-        shadowB * sw * 1.5 +
-        midB * midWeight * 1.5 +
-        highB * hw * 1.5,
-      0,
-      255
-    );
-  }
-}
-
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  return [
-    parseInt(h.substring(0, 2), 16),
-    parseInt(h.substring(2, 4), 16),
-    parseInt(h.substring(4, 6), 16),
-  ];
-}
-
-function applySplitToning(
-  data: Uint8ClampedArray,
-  shadowColor: string,
-  highlightColor: string,
-  balance: number
-): void {
-  const [sr, sg, sb] = hexToRgb(shadowColor);
-  const [hr, hg, hb] = hexToRgb(highlightColor);
-  // If both are near-black/white defaults skip
-  const bal = balance / 100;
-  const strength = 0.15;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const lum = (data[i] + data[i + 1] + data[i + 2]) / 3 / 255;
-    const shadowWeight = clamp((1 - lum) * (1 - bal) * 2, 0, 1) * strength;
-    const highlightWeight = clamp(lum * bal * 2, 0, 1) * strength;
-
-    data[i] = clamp(
-      data[i] + (sr - 128) * shadowWeight + (hr - 128) * highlightWeight,
-      0,
-      255
-    );
-    data[i + 1] = clamp(
-      data[i + 1] + (sg - 128) * shadowWeight + (hg - 128) * highlightWeight,
-      0,
-      255
-    );
-    data[i + 2] = clamp(
-      data[i + 2] + (sb - 128) * shadowWeight + (hb - 128) * highlightWeight,
-      0,
-      255
-    );
-  }
+  return tempCanvas;
 }
 
 // ── Tool Category Definitions ──────────────────────────────────────────────────
@@ -641,6 +628,8 @@ function StudioSlider({
   step = 1,
   defaultValue = 0,
   onChange,
+  onAdjustStart,
+  onAdjustEnd,
   suffix = "",
 }: {
   label: string;
@@ -650,6 +639,8 @@ function StudioSlider({
   step?: number;
   defaultValue?: number;
   onChange: (val: number) => void;
+  onAdjustStart?: () => void;
+  onAdjustEnd?: () => void;
   suffix?: string;
 }) {
   const pct =
@@ -690,6 +681,9 @@ function StudioSlider({
           step={step}
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
+          onPointerDown={onAdjustStart}
+          onPointerUp={onAdjustEnd}
+          onPointerCancel={onAdjustEnd}
           onDoubleClick={() => onChange(defaultValue)}
           className="absolute w-full h-5 opacity-0 cursor-pointer"
           style={{ zIndex: 2 }}
@@ -789,6 +783,13 @@ export default function ImageStudioPage() {
   const renderRafRef = useRef<number>(0);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
+  // ── Performance refs ──
+  const isAdjustingRef = useRef(false);
+  const fullRenderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const convolutionBufferRef = useRef<Uint8ClampedArray | null>(null);
+  const glowCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const downscaledCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
   // ── Computed: merged adjustments with filter ──
   const mergedAdjustments = useMemo<AdjustmentValues>(() => {
     const preset = FILTER_PRESETS.find((f) => f.id === activeFilter);
@@ -817,6 +818,10 @@ export default function ImageStudioPage() {
     setTransform(DEFAULT_TRANSFORM);
     setCrop(DEFAULT_CROP);
     setZoom(100);
+    // Clear cached buffers
+    convolutionBufferRef.current = null;
+    glowCanvasRef.current = null;
+    downscaledCanvasRef.current = null;
 
     const img = new Image();
     img.onload = () => {
@@ -836,7 +841,7 @@ export default function ImageStudioPage() {
   );
 
   // ── Render Pipeline ──
-  const renderCanvas = useCallback(() => {
+  const renderCanvas = useCallback((quality: RenderQuality = "full") => {
     const img = sourceImageRef.current;
     const canvas = canvasRef.current;
     if (!img || !canvas) return;
@@ -844,8 +849,22 @@ export default function ImageStudioPage() {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
 
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
+    const origW = img.naturalWidth;
+    const origH = img.naturalHeight;
+
+    // Determine working dimensions based on quality
+    let w = origW;
+    let h = origH;
+    let downscaleRatio = 1;
+
+    if (quality === "preview") {
+      const maxDim = Math.max(origW, origH);
+      if (maxDim > PREVIEW_MAX_DIMENSION) {
+        downscaleRatio = PREVIEW_MAX_DIMENSION / maxDim;
+        w = Math.round(origW * downscaleRatio);
+        h = Math.round(origH * downscaleRatio);
+      }
+    }
 
     // Apply transform to determine canvas size
     const radians = (transform.rotate * Math.PI) / 180;
@@ -871,7 +890,7 @@ export default function ImageStudioPage() {
     filters.push(`contrast(${contrast})`);
     filters.push(`saturate(${saturate})`);
     if (hueRot !== 0) filters.push(`hue-rotate(${hueRot}deg)`);
-    if (blurPx > 0) filters.push(`blur(${blurPx}px)`);
+    if (blurPx > 0) filters.push(`blur(${blurPx * (quality === "preview" ? downscaleRatio : 1)}px)`);
 
     ctx.save();
     ctx.clearRect(0, 0, rw, rh);
@@ -884,7 +903,7 @@ export default function ImageStudioPage() {
       (transform.flipV ? -1 : 1) * scaleFactor
     );
 
-    // Apply CSS filters
+    // Apply CSS filters & draw (possibly downscaled)
     ctx.filter = filters.join(" ");
     ctx.drawImage(img, -w / 2, -h / 2, w, h);
     ctx.restore();
@@ -896,43 +915,45 @@ export default function ImageStudioPage() {
     const imageData = ctx.getImageData(0, 0, rw, rh);
     const data = imageData.data;
 
-    applyExposure(data, adj.exposure);
-    applyTemperature(data, adj.temperature);
-    applyTint(data, adj.tint);
-    applyHighlightsShadows(data, adj.highlights, adj.shadows, adj.whites, adj.blacks);
-    applyVibrance(data, adj.vibrance);
-    applyClarity(data, rw, rh, adj.clarity);
-    applySharpness(data, rw, rh, adj.sharpness);
-    applyColorBalance(
-      data,
-      color.shadowR,
-      color.shadowG,
-      color.shadowB,
-      color.midtoneR,
-      color.midtoneG,
-      color.midtoneB,
-      color.highlightR,
-      color.highlightG,
-      color.highlightB
-    );
-    applySplitToning(
-      data,
-      color.splitShadowColor,
-      color.splitHighlightColor,
-      color.splitBalance
-    );
-    applyPosterize(data, effects.posterize);
-    applyGrain(data, effects.grain);
-    applyVignette(data, rw, rh, effects.vignette, effects.vignetteRoundness);
+    // Single-pass pixel processing (replaces 10+ separate loops)
+    processPixels(data, rw, rh, adj, effects, color);
+
+    // Convolution effects (clarity & sharpness) - expensive, special handling
+    const clarityRadius = quality === "preview" ? 1 : 2;
+    let buf = convolutionBufferRef.current;
+    buf = applyClarity(data, rw, rh, adj.clarity, buf, clarityRadius);
+    buf = applySharpness(data, rw, rh, adj.sharpness, buf);
+    convolutionBufferRef.current = buf;
 
     ctx.putImageData(imageData, 0, 0);
 
     // Effects that need canvas context
     applyPixelate(ctx, rw, rh, effects.pixelate);
-    applyGlow(ctx, rw, rh, effects.glow);
+    glowCanvasRef.current = applyGlow(ctx, rw, rh, effects.glow, glowCanvasRef.current);
 
     // Crop overlay is drawn via CSS, not baked in
   }, [mergedAdjustments, effects, color, transform]);
+
+  // ── Slider adjustment tracking ──
+  const handleAdjustStart = useCallback(() => {
+    isAdjustingRef.current = true;
+    if (fullRenderTimeoutRef.current) {
+      clearTimeout(fullRenderTimeoutRef.current);
+      fullRenderTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handleAdjustEnd = useCallback(() => {
+    isAdjustingRef.current = false;
+    // Schedule a full-quality render after a short delay
+    if (fullRenderTimeoutRef.current) {
+      clearTimeout(fullRenderTimeoutRef.current);
+    }
+    fullRenderTimeoutRef.current = setTimeout(() => {
+      renderCanvas("full");
+      fullRenderTimeoutRef.current = null;
+    }, 200);
+  }, [renderCanvas]);
 
   // ── Debounced Render ──
   useEffect(() => {
@@ -953,7 +974,8 @@ export default function ImageStudioPage() {
     if (renderPendingRef.current) return;
     renderPendingRef.current = true;
     renderRafRef.current = requestAnimationFrame(() => {
-      renderCanvas();
+      const quality: RenderQuality = isAdjustingRef.current ? "preview" : "full";
+      renderCanvas(quality);
       renderPendingRef.current = false;
     });
     return () => {
@@ -962,9 +984,21 @@ export default function ImageStudioPage() {
     };
   }, [renderCanvas, showOriginal]);
 
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (fullRenderTimeoutRef.current) {
+        clearTimeout(fullRenderTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // ── Export Helpers ──
   const exportImage = useCallback(
     (format: OutputFormat) => {
+      // Always render at full quality for export
+      renderCanvas("full");
+
       const canvas = canvasRef.current;
       if (!canvas) return;
 
@@ -1007,7 +1041,7 @@ export default function ImageStudioPage() {
       );
       setExportMenuOpen(false);
     },
-    [jpegQuality, imageFile, crop]
+    [jpegQuality, imageFile, crop, renderCanvas]
   );
 
   const copyToClipboard = useCallback(async () => {
@@ -1036,6 +1070,9 @@ export default function ImageStudioPage() {
     setColor(DEFAULT_COLOR);
     setTransform(DEFAULT_TRANSFORM);
     setCrop(DEFAULT_CROP);
+    // Clear cached buffers
+    convolutionBufferRef.current = null;
+    glowCanvasRef.current = null;
   }, []);
 
   // ── Close export menu on outside click ──
@@ -1066,8 +1103,6 @@ export default function ImageStudioPage() {
   const handleCropPointerMove = useCallback(
     (e: ReactPointerEvent) => {
       if (!cropDragging || !cropDragStart || !previewContainerRef.current) return;
-      const container = previewContainerRef.current;
-      const rect = container.getBoundingClientRect();
       const canvasEl = canvasRef.current;
       if (!canvasEl) return;
 
@@ -1713,6 +1748,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("brightness", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Contrast"
@@ -1720,6 +1757,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("contrast", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Exposure"
@@ -1727,6 +1766,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("exposure", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Highlights"
@@ -1734,6 +1775,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("highlights", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Shadows"
@@ -1741,6 +1784,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("shadows", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Whites"
@@ -1748,6 +1793,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("whites", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Blacks"
@@ -1755,6 +1802,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("blacks", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
 
@@ -1765,6 +1814,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("temperature", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Tint"
@@ -1772,6 +1823,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("tint", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Vibrance"
@@ -1779,6 +1832,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("vibrance", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Saturation"
@@ -1786,6 +1841,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("saturation", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
 
@@ -1796,6 +1853,8 @@ export default function ImageStudioPage() {
                     min={-100}
                     max={100}
                     onChange={(v) => setAdj("clarity", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Sharpness"
@@ -1803,6 +1862,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={100}
                     onChange={(v) => setAdj("sharpness", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
               </>
@@ -1861,6 +1922,8 @@ export default function ImageStudioPage() {
                     max={100}
                     defaultValue={100}
                     onChange={setFilterIntensity}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                     suffix="%"
                   />
                 )}
@@ -1877,6 +1940,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={100}
                     onChange={(v) => setEff("grain", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Vignette">
@@ -1886,6 +1951,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={100}
                     onChange={(v) => setEff("vignette", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Roundness"
@@ -1894,6 +1961,8 @@ export default function ImageStudioPage() {
                     max={100}
                     defaultValue={50}
                     onChange={(v) => setEff("vignetteRoundness", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Blur & Distortion">
@@ -1903,6 +1972,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={30}
                     onChange={(v) => setEff("blur", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                     suffix="px"
                   />
                   <StudioSlider
@@ -1912,6 +1983,8 @@ export default function ImageStudioPage() {
                     max={50}
                     defaultValue={1}
                     onChange={(v) => setEff("pixelate", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Enhancement">
@@ -1921,6 +1994,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={100}
                     onChange={(v) => setEff("noiseReduction", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Glow"
@@ -1928,6 +2003,8 @@ export default function ImageStudioPage() {
                     min={0}
                     max={100}
                     onChange={(v) => setEff("glow", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Posterize"
@@ -1936,6 +2013,8 @@ export default function ImageStudioPage() {
                     max={32}
                     defaultValue={32}
                     onChange={(v) => setEff("posterize", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
               </>
@@ -1952,6 +2031,8 @@ export default function ImageStudioPage() {
                     max={360}
                     defaultValue={0}
                     onChange={(v) => setCol("hueRotate", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                     suffix="deg"
                   />
                 </CollapsibleSection>
@@ -1962,6 +2043,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("shadowR", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Green"
@@ -1969,6 +2052,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("shadowG", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Blue"
@@ -1976,6 +2061,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("shadowB", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Color Balance - Midtones">
@@ -1985,6 +2072,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("midtoneR", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Green"
@@ -1992,6 +2081,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("midtoneG", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Blue"
@@ -1999,6 +2090,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("midtoneB", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Color Balance - Highlights">
@@ -2008,6 +2101,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("highlightR", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Green"
@@ -2015,6 +2110,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("highlightG", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                   <StudioSlider
                     label="Blue"
@@ -2022,6 +2119,8 @@ export default function ImageStudioPage() {
                     min={-50}
                     max={50}
                     onChange={(v) => setCol("highlightB", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
                 <CollapsibleSection title="Split Toning">
@@ -2068,6 +2167,8 @@ export default function ImageStudioPage() {
                     max={100}
                     defaultValue={50}
                     onChange={(v) => setCol("splitBalance", v)}
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                   />
                 </CollapsibleSection>
               </>
@@ -2086,6 +2187,8 @@ export default function ImageStudioPage() {
                     onChange={(v) =>
                       setTransform((prev) => ({ ...prev, rotate: v }))
                     }
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                     suffix="deg"
                   />
                 </CollapsibleSection>
@@ -2143,6 +2246,8 @@ export default function ImageStudioPage() {
                     onChange={(v) =>
                       setTransform((prev) => ({ ...prev, scale: v }))
                     }
+                    onAdjustStart={handleAdjustStart}
+                    onAdjustEnd={handleAdjustEnd}
                     suffix="%"
                   />
                 </CollapsibleSection>

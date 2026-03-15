@@ -1,5 +1,13 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Type, QrCode, Eraser, Wand2 } from "lucide-react";
+
+export const metadata: Metadata = {
+  title: "Tools by Snowy — Free Creative Toolkit",
+  description:
+    "Free browser-based creative tools by Snowy. Font creator, QR code generator, AI background remover, image effects studio. Everything runs locally — no server uploads.",
+  alternates: { canonical: "https://tools.snowydev.xyz" },
+};
 
 const tools = [
   {
@@ -32,8 +40,11 @@ export default function Home() {
   return (
     <main className="min-h-screen p-8 md:p-16">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-3xl font-semibold tracking-tight mb-2">Tools</h1>
-        <p className="text-[var(--muted)] mb-12">A collection of creative tools.</p>
+        <h1 className="text-3xl font-semibold tracking-tight mb-2">Tools by Snowy</h1>
+        <p className="text-[var(--muted)] mb-1">Free creative tools that run entirely in your browser.</p>
+        <p className="text-xs text-[var(--muted)] mb-12">
+          Made by <a href="https://snowydev.xyz" className="text-[var(--accent)] hover:underline" target="_blank" rel="noopener noreferrer">Snowy</a> — no data leaves your device.
+        </p>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {tools.map((tool) => (
             <Link
