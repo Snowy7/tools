@@ -549,20 +549,20 @@ export default function BackgroundRemoverPage() {
               <img
                 src={state.resultUrl}
                 alt="Result with background removed"
-                className="w-full block"
+                className="w-full block max-h-[65vh] object-contain"
                 draggable={false}
               />
 
               {/* Before (original) - clipped overlay */}
               <div
-                className="absolute inset-0 overflow-hidden"
+                className="absolute top-0 left-0 bottom-0 overflow-hidden"
                 style={{ width: `${sliderPosition}%` }}
               >
                 <img
                   src={state.originalUrl}
                   alt="Original image"
-                  className="block h-full object-cover"
-                  style={{ width: `${containerWidth}px` }}
+                  className="block max-w-none h-full object-contain"
+                  style={{ width: containerWidth > 0 ? `${containerWidth}px` : "100vw" }}
                   draggable={false}
                 />
               </div>

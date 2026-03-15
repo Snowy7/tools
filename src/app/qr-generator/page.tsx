@@ -30,7 +30,7 @@ import {
 // ---------------------------------------------------------------------------
 
 type ContentType = "text" | "url" | "wifi" | "email" | "phone" | "sms";
-type QRStyle = "square" | "dots" | "rounded";
+type QRStyle = "square" | "dots" | "rounded" | "diamond" | "star" | "columns";
 type ErrorLevel = "L" | "M" | "Q" | "H";
 type LogoShape = "square" | "circle" | "rounded";
 
@@ -289,10 +289,13 @@ const errorLevels: { value: ErrorLevel; label: string; desc: string }[] = [
   { value: "H", label: "H", desc: "30%" },
 ];
 
-const qrStyles: { value: QRStyle; label: string }[] = [
-  { value: "square", label: "Square" },
-  { value: "dots", label: "Dots" },
-  { value: "rounded", label: "Rounded" },
+const qrStyles: { value: QRStyle; label: string; icon: React.ReactNode }[] = [
+  { value: "square", label: "Square", icon: <Square size={13} /> },
+  { value: "dots", label: "Dots", icon: <Circle size={13} /> },
+  { value: "rounded", label: "Rounded", icon: <RectangleHorizontal size={13} /> },
+  { value: "diamond", label: "Diamond", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2 22 12 12 22 2 12z"/></svg> },
+  { value: "star", label: "Star", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> },
+  { value: "columns", label: "Columns", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 3v18M10 3v18M16 3v18M22 3v18"/></svg> },
 ];
 
 const logoShapes: { value: LogoShape; label: string; icon: React.ReactNode }[] =
@@ -400,89 +403,98 @@ export default function QRGeneratorPage() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const opts = {
-      errorCorrectionLevel: errorLevel,
-      margin,
-      width,
-      color: {
-        dark: fgColor,
-        light: transparentBg ? "#00000000" : bgColor,
-      },
-    };
-
-    // For "square" style we can just use toCanvas
-    if (qrStyle === "square") {
-      try {
-        await QRCode.toCanvas(canvas, qrData, opts);
-        // Force the canvas to be square (toCanvas sets width/height)
-        canvas.width = width;
-        canvas.height = width;
-        await QRCode.toCanvas(canvas, qrData, opts);
-      } catch {
-        canvas.width = width;
-        canvas.height = width;
-        ctx.clearRect(0, 0, width, width);
-        return;
-      }
-    } else {
-      // Custom drawing for dots / rounded
-      let qrObj: { modules: { size: number; data: Uint8Array } };
-      try {
-        qrObj = QRCode.create(qrData, {
-          errorCorrectionLevel: errorLevel,
-        }) as any;
-      } catch {
-        canvas.width = width;
-        canvas.height = width;
-        ctx.clearRect(0, 0, width, width);
-        return;
-      }
-
-      const moduleCount = qrObj.modules.size;
-      const totalModules = moduleCount + margin * 2;
-      const moduleSize = width / totalModules;
-
+    // Always use QRCode.create + manual drawing to guarantee square canvas
+    let qrObj: { modules: { size: number; data: Uint8Array } };
+    try {
+      qrObj = QRCode.create(qrData, {
+        errorCorrectionLevel: errorLevel,
+      }) as any;
+    } catch {
       canvas.width = width;
       canvas.height = width;
+      ctx.clearRect(0, 0, width, width);
+      return;
+    }
 
-      // Background
-      if (!transparentBg) {
-        ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, width, width);
-      } else {
-        ctx.clearRect(0, 0, width, width);
-      }
+    const moduleCount = qrObj.modules.size;
+    const totalModules = moduleCount + margin * 2;
+    const moduleSize = width / totalModules;
 
-      ctx.fillStyle = fgColor;
+    canvas.width = width;
+    canvas.height = width;
 
-      for (let row = 0; row < moduleCount; row++) {
-        for (let col = 0; col < moduleCount; col++) {
-          const idx = row * moduleCount + col;
-          if (qrObj.modules.data[idx]) {
-            const x = (col + margin) * moduleSize;
-            const y = (row + margin) * moduleSize;
+    // Background
+    if (!transparentBg) {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, width, width);
+    } else {
+      ctx.clearRect(0, 0, width, width);
+    }
 
-            if (qrStyle === "dots") {
-              const radius = moduleSize / 2;
-              ctx.beginPath();
-              ctx.arc(
-                x + radius,
-                y + radius,
-                radius * 0.85,
-                0,
-                Math.PI * 2
-              );
-              ctx.fill();
-            } else if (qrStyle === "rounded") {
-              const r =
-                Math.min(cornerRadius, moduleSize / 2) * (moduleSize / 50);
-              const clampedR = Math.min(r, moduleSize / 2);
-              const s = moduleSize * 0.95;
-              const offset = (moduleSize - s) / 2;
-              ctx.beginPath();
-              ctx.roundRect(x + offset, y + offset, s, s, clampedR);
-              ctx.fill();
-            }
+    ctx.fillStyle = fgColor;
+
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        const idx = row * moduleCount + col;
+        if (!qrObj.modules.data[idx]) continue;
+
+        const x = (col + margin) * moduleSize;
+        const y = (row + margin) * moduleSize;
+
+        if (qrStyle === "dots") {
+          const radius = moduleSize / 2;
+          ctx.beginPath();
+          ctx.arc(x + radius, y + radius, radius * 0.85, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (qrStyle === "rounded") {
+          const r = Math.min(cornerRadius, moduleSize / 2) * (moduleSize / 50);
+          const clampedR = Math.min(r, moduleSize / 2);
+          const s = moduleSize * 0.95;
+          const offset = (moduleSize - s) / 2;
+          ctx.beginPath();
+          ctx.roundRect(x + offset, y + offset, s, s, clampedR);
+          ctx.fill();
+        } else if (qrStyle === "diamond") {
+          const cx = x + moduleSize / 2;
+          const cy = y + moduleSize / 2;
+          const half = moduleSize * 0.48;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - half);
+          ctx.lineTo(cx + half, cy);
+          ctx.lineTo(cx, cy + half);
+          ctx.lineTo(cx - half, cy);
+          ctx.closePath();
+          ctx.fill();
+        } else if (qrStyle === "star") {
+          const cx = x + moduleSize / 2;
+          const cy = y + moduleSize / 2;
+          const outer = moduleSize * 0.5;
+          const inner = moduleSize * 0.22;
+          ctx.beginPath();
+          for (let k = 0; k < 5; k++) {
+            const aOuter = (k * 72 - 90) * (Math.PI / 180);
+            const aInner = ((k * 72 + 36) - 90) * (Math.PI / 180);
+            ctx.lineTo(cx + Math.cos(aOuter) * outer, cy + Math.sin(aOuter) * outer);
+            ctx.lineTo(cx + Math.cos(aInner) * inner, cy + Math.sin(aInner) * inner);
+          }
+          ctx.closePath();
+          ctx.fill();
+        } else if (qrStyle === "columns") {
+          // Rounded vertical bars
+          const barW = moduleSize * 0.6;
+          const bx = x + (moduleSize - barW) / 2;
+          ctx.beginPath();
+          ctx.roundRect(bx, y, barW, moduleSize, barW / 2);
+          ctx.fill();
+        } else {
+          // Square style with optional corner radius
+          if (cornerRadius > 0) {
+            const r = Math.min(cornerRadius, moduleSize / 2) * (moduleSize / 50);
+            ctx.beginPath();
+            ctx.roundRect(x, y, moduleSize, moduleSize, Math.min(r, moduleSize / 2));
+            ctx.fill();
+          } else {
+            ctx.fillRect(x, y, moduleSize, moduleSize);
           }
         }
       }
@@ -858,24 +870,25 @@ export default function QRGeneratorPage() {
 
             <div className="flex flex-col gap-1">
               <Label>Style</Label>
-              <div className="flex gap-1">
+              <div className="grid grid-cols-3 gap-1">
                 {qrStyles.map((s) => (
                   <button
                     key={s.value}
                     onClick={() => setQrStyle(s.value)}
-                    className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    className={`flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] font-medium rounded-md transition-colors ${
                       qrStyle === s.value
                         ? "bg-[var(--accent)] text-white"
                         : "bg-[var(--surface-hover)] text-[var(--foreground)] hover:bg-[var(--border)]"
                     }`}
                   >
+                    {s.icon}
                     {s.label}
                   </button>
                 ))}
               </div>
             </div>
 
-            {qrStyle === "rounded" && (
+            {(qrStyle === "rounded" || qrStyle === "square") && (
               <Slider
                 label="Corner Radius"
                 value={cornerRadius}
