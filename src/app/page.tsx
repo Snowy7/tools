@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Type, QrCode, Eraser } from "lucide-react";
+import { Type, QrCode, Eraser, Wand2 } from "lucide-react";
 
 const tools = [
   {
@@ -19,6 +19,12 @@ const tools = [
     description: "Remove image backgrounds instantly using AI, right in your browser",
     href: "/bg-remover",
     icon: <Eraser size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Image Studio",
+    description: "Full image editor with filters, adjustments, effects, and color grading",
+    href: "/image-studio",
+    icon: <Wand2 size={28} strokeWidth={1.5} />,
   },
 ];
 
