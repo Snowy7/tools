@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import Link from "next/link";
 import {
   Upload,
@@ -17,6 +17,10 @@ import {
   Cpu,
   Sparkles,
   Zap,
+  Pipette,
+  Sun,
+  Brain,
+  FlaskConical,
 } from "lucide-react";
 
 // ── Types ──
@@ -25,42 +29,87 @@ type AppState =
   | { kind: "upload" }
   | { kind: "processing"; originalUrl: string; originalFile: File; statusText: string; progress: number }
   | { kind: "result"; originalUrl: string; resultUrl: string; originalFile: File; resultBlob: Blob; elapsed: number; engine: RemovalEngine }
+  | { kind: "chromakey"; originalUrl: string; originalFile: File }
+  | { kind: "luminance"; originalUrl: string; originalFile: File }
   | { kind: "error"; message: string; originalFile: File | null };
 
 type OutputFormat = "png" | "jpeg" | "webp";
-type RemovalEngine = "imgly" | "rmbg2" | "rmbg14";
+type RemovalEngine = "ormbg" | "birefnet" | "modnet" | "imgly" | "chromakey" | "luminance";
 
 interface EngineOption {
   id: RemovalEngine;
   name: string;
   desc: string;
   icon: React.ReactNode;
-  quality: string;
+  badge: string;
+  badgeColor: string;
+  group: "ai" | "algorithm";
+  size?: string;
 }
 
 const ENGINES: EngineOption[] = [
   {
-    id: "rmbg2",
-    name: "RMBG 2.0",
-    desc: "Best quality, BRIA AI latest model",
+    id: "ormbg",
+    name: "ORMBG",
+    desc: "Best general purpose, Apache 2.0",
     icon: <Sparkles size={16} />,
-    quality: "Best",
+    badge: "Best",
+    badgeColor: "bg-emerald-100 text-emerald-700",
+    group: "ai",
+    size: "~44MB",
   },
   {
-    id: "rmbg14",
-    name: "RMBG 1.4",
-    desc: "Fast and reliable, good for most images",
+    id: "birefnet",
+    name: "BiRefNet Lite",
+    desc: "Best edge quality, MIT license",
+    icon: <Brain size={16} />,
+    badge: "Quality",
+    badgeColor: "bg-purple-100 text-purple-700",
+    group: "ai",
+    size: "~115MB",
+  },
+  {
+    id: "modnet",
+    name: "MODNet",
+    desc: "Portraits only, very lightweight",
     icon: <Zap size={16} />,
-    quality: "Fast",
+    badge: "Fast",
+    badgeColor: "bg-blue-100 text-blue-700",
+    group: "ai",
+    size: "~7MB",
   },
   {
     id: "imgly",
     name: "ISNET",
     desc: "IMG.LY engine, lightweight model",
     icon: <Cpu size={16} />,
-    quality: "Light",
+    badge: "Light",
+    badgeColor: "bg-gray-100 text-gray-600",
+    group: "ai",
+    size: "~40MB",
+  },
+  {
+    id: "chromakey",
+    name: "Chroma Key",
+    desc: "Pick a color to remove (green screen, etc.)",
+    icon: <Pipette size={16} />,
+    badge: "Instant",
+    badgeColor: "bg-amber-100 text-amber-700",
+    group: "algorithm",
+  },
+  {
+    id: "luminance",
+    name: "Luminance",
+    desc: "Remove white or black backgrounds by brightness",
+    icon: <Sun size={16} />,
+    badge: "Instant",
+    badgeColor: "bg-amber-100 text-amber-700",
+    group: "algorithm",
   },
 ];
+
+const AI_ENGINES = ENGINES.filter((e) => e.group === "ai");
+const ALGO_ENGINES = ENGINES.filter((e) => e.group === "algorithm");
 
 interface Settings {
   outputQuality: number;
@@ -70,11 +119,21 @@ interface Settings {
   bgImageUrl: string | null;
   bgImageFile: File | null;
   smoothEdges: boolean;
-  // Mask refinement
-  alphaThreshold: number;    // 0-255, pixels below this alpha become fully transparent
-  edgeFeather: number;       // 0-10px, blur radius on the alpha mask
-  maskContrast: number;      // 0.5-3.0, sharpens or softens the mask edge
-  foregroundBoost: boolean;  // boost the foreground alpha to reduce semi-transparent halos
+  alphaThreshold: number;
+  edgeFeather: number;
+  maskContrast: number;
+  foregroundBoost: boolean;
+}
+
+interface ChromaKeySettings {
+  keyColor: [number, number, number] | null;
+  tolerance: number;
+}
+
+interface LuminanceSettings {
+  threshold: number;
+  invert: boolean;
+  softness: number;
 }
 
 // ── Helpers ──
@@ -103,11 +162,86 @@ const FORMAT_EXT: Record<OutputFormat, string> = {
   webp: ".webp",
 };
 
+function rgbDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+}
+
+function applyChromaKey(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  keyColor: [number, number, number],
+  tolerance: number,
+): Blob | null {
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data;
+  const [kr, kg, kb] = keyColor;
+  const edgeWidth = Math.max(tolerance * 0.15, 5);
+
+  for (let i = 0; i < d.length; i += 4) {
+    const dist = rgbDistance(d[i], d[i + 1], d[i + 2], kr, kg, kb);
+    if (dist < tolerance) {
+      d[i + 3] = 0;
+    } else if (dist < tolerance + edgeWidth) {
+      const alpha = ((dist - tolerance) / edgeWidth) * 255;
+      d[i + 3] = Math.min(d[i + 3], Math.round(alpha));
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return null; // canvas is modified in place
+}
+
+function applyLuminance(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  threshold: number,
+  invert: boolean,
+  softness: number,
+): void {
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data;
+  const soft = Math.max(softness, 1);
+
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    let alpha: number;
+
+    if (invert) {
+      // Remove dark pixels
+      if (lum < threshold) {
+        alpha = 0;
+      } else if (lum < threshold + soft) {
+        alpha = ((lum - threshold) / soft) * 255;
+      } else {
+        alpha = 255;
+      }
+    } else {
+      // Remove light pixels
+      if (lum > threshold) {
+        alpha = 0;
+      } else if (lum > threshold - soft) {
+        alpha = ((threshold - lum) / soft) * 255;
+      } else {
+        alpha = 255;
+      }
+    }
+    d[i + 3] = Math.min(d[i + 3], Math.round(alpha));
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
 // ── Component ──
 
 export default function BackgroundRemoverPage() {
   const [state, setState] = useState<AppState>({ kind: "upload" });
-  const [selectedEngine, setSelectedEngine] = useState<RemovalEngine>("rmbg2");
+  const [selectedEngine, setSelectedEngine] = useState<RemovalEngine>("ormbg");
   const [isDragging, setIsDragging] = useState(false);
   const [sliderPosition, setSliderPosition] = useState(50);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -129,11 +263,30 @@ export default function BackgroundRemoverPage() {
   });
   const [refinedResultUrl, setRefinedResultUrl] = useState<string | null>(null);
 
+  // Chroma key state
+  const [chromaSettings, setChromaSettings] = useState<ChromaKeySettings>({
+    keyColor: null,
+    tolerance: 40,
+  });
+  const [chromaResultUrl, setChromaResultUrl] = useState<string | null>(null);
+
+  // Luminance state
+  const [lumSettings, setLumSettings] = useState<LuminanceSettings>({
+    threshold: 240,
+    invert: false,
+    softness: 15,
+  });
+  const [lumResultUrl, setLumResultUrl] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgImageInputRef = useRef<HTMLInputElement>(null);
   const sliderContainerRef = useRef<HTMLDivElement>(null);
   const formatDropdownRef = useRef<HTMLDivElement>(null);
   const isDraggingSlider = useRef(false);
+  const chromaCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lumCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const chromaImgRef = useRef<HTMLImageElement | null>(null);
+  const lumImgRef = useRef<HTMLImageElement | null>(null);
 
   // Track container width via ResizeObserver
   useEffect(() => {
@@ -169,11 +322,77 @@ export default function BackgroundRemoverPage() {
       URL.revokeObjectURL(state.originalUrl);
       URL.revokeObjectURL(state.resultUrl);
     }
-  }, [state]);
+    if (state.kind === "chromakey" && state.originalUrl) {
+      URL.revokeObjectURL(state.originalUrl);
+    }
+    if (state.kind === "luminance" && state.originalUrl) {
+      URL.revokeObjectURL(state.originalUrl);
+    }
+    if (chromaResultUrl) URL.revokeObjectURL(chromaResultUrl);
+    if (lumResultUrl) URL.revokeObjectURL(lumResultUrl);
+  }, [state, chromaResultUrl, lumResultUrl]);
+
+  // Process with chroma key live preview
+  useEffect(() => {
+    if (state.kind !== "chromakey" || !chromaSettings.keyColor) return;
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      applyChromaKey(canvas, img, chromaSettings.keyColor!, chromaSettings.tolerance);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          setChromaResultUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(blob);
+          });
+        }
+      }, "image/png");
+      chromaCanvasRef.current = canvas;
+      chromaImgRef.current = img;
+    };
+    img.src = state.originalUrl;
+  }, [state.kind, state.kind === "chromakey" ? state.originalUrl : null, chromaSettings.keyColor, chromaSettings.tolerance]);
+
+  // Process with luminance live preview
+  useEffect(() => {
+    if (state.kind !== "luminance") return;
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      applyLuminance(canvas, img, lumSettings.threshold, lumSettings.invert, lumSettings.softness);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          setLumResultUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(blob);
+          });
+        }
+      }, "image/png");
+      lumCanvasRef.current = canvas;
+      lumImgRef.current = img;
+    };
+    img.src = state.originalUrl;
+  }, [state.kind, state.kind === "luminance" ? state.originalUrl : null, lumSettings.threshold, lumSettings.invert, lumSettings.softness]);
 
   const processImage = useCallback(async (file: File, engine?: RemovalEngine) => {
     const eng = engine ?? selectedEngine;
     const originalUrl = URL.createObjectURL(file);
+
+    // For algorithmic methods, go directly to their interactive state
+    if (eng === "chromakey") {
+      setChromaSettings({ keyColor: null, tolerance: 40 });
+      setChromaResultUrl(null);
+      setState({ kind: "chromakey", originalUrl, originalFile: file });
+      return;
+    }
+    if (eng === "luminance") {
+      setLumSettings({ threshold: 240, invert: false, softness: 15 });
+      setLumResultUrl(null);
+      setState({ kind: "luminance", originalUrl, originalFile: file });
+      return;
+    }
 
     setState({
       kind: "processing",
@@ -189,7 +408,6 @@ export default function BackgroundRemoverPage() {
       let resultBlob: Blob;
 
       if (eng === "imgly") {
-        // IMG.LY ISNET engine
         const { removeBackground } = await import("@imgly/background-removal");
         resultBlob = await removeBackground(file, {
           progress: (key: string, current: number, total: number) => {
@@ -202,99 +420,36 @@ export default function BackgroundRemoverPage() {
           },
         });
       } else {
-        // HuggingFace Transformers.js — RMBG models
-        const modelId = eng === "rmbg2"
-          ? "briaai/RMBG-2.0"
-          : "briaai/RMBG-1.4";
+        // Transformers.js pipeline API for ormbg, birefnet, modnet
+        const modelMap: Record<string, string> = {
+          ormbg: "onnx-community/ormbg-ONNX",
+          birefnet: "onnx-community/BiRefNet_lite-ONNX",
+          modnet: "Xenova/modnet",
+        };
+        const modelId = modelMap[eng];
+        const engineName = ENGINES.find((e) => e.id === eng)?.name ?? eng;
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Loading ${eng === "rmbg2" ? "RMBG 2.0" : "RMBG 1.4"}...`, progress: 10 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Loading ${engineName}...`, progress: 10 } : prev);
 
-        const { AutoModel, AutoProcessor, RawImage } = await import("@huggingface/transformers");
+        const { pipeline, env } = await import("@huggingface/transformers");
+        env.allowLocalModels = false;
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Downloading model weights...", progress: 20 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Downloading model weights...", progress: 25 } : prev);
 
-        const model = await AutoModel.from_pretrained(modelId, {
+        const segmenter = await pipeline("background-removal", modelId, {
           device: "webgpu" in navigator ? "webgpu" : "wasm",
-          dtype: "fp32",
         });
-
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Loading processor...", progress: 40 } : prev);
-
-        const processor = await AutoProcessor.from_pretrained(modelId);
-
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Processing image...", progress: 50 } : prev);
-
-        // Load image
-        const imageUrl = URL.createObjectURL(file);
-        const rawImage = await RawImage.fromURL(imageUrl);
-        URL.revokeObjectURL(imageUrl);
 
         setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Running AI model...", progress: 60 } : prev);
 
-        // Process
-        const { pixel_values } = await processor(rawImage);
-        const { output } = await model({ input: pixel_values });
+        const imageUrl = URL.createObjectURL(file);
+        const result = await segmenter(imageUrl);
+        URL.revokeObjectURL(imageUrl);
 
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Generating mask...", progress: 80 } : prev);
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Generating result...", progress: 90 } : prev);
 
-        // Post-process the mask
-        const maskData = output[0][0].data;
-        const maskH = output[0][0].dims[0] ?? rawImage.height;
-        const maskW = output[0][0].dims[1] ?? rawImage.width;
-
-        // Create mask image and resize to original dimensions
-        const maskCanvas = document.createElement("canvas");
-        maskCanvas.width = maskW;
-        maskCanvas.height = maskH;
-        const maskCtx = maskCanvas.getContext("2d")!;
-        const maskImageData = maskCtx.createImageData(maskW, maskH);
-
-        // Normalize mask values to 0-255
-        let minVal = Infinity, maxVal = -Infinity;
-        for (let i = 0; i < maskData.length; i++) {
-          if (maskData[i] < minVal) minVal = maskData[i];
-          if (maskData[i] > maxVal) maxVal = maskData[i];
-        }
-        const range = maxVal - minVal || 1;
-
-        for (let i = 0; i < maskData.length; i++) {
-          const alpha = Math.round(((maskData[i] - minVal) / range) * 255);
-          maskImageData.data[i * 4] = 255;
-          maskImageData.data[i * 4 + 1] = 255;
-          maskImageData.data[i * 4 + 2] = 255;
-          maskImageData.data[i * 4 + 3] = alpha;
-        }
-        maskCtx.putImageData(maskImageData, 0, 0);
-
-        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Compositing result...", progress: 90 } : prev);
-
-        // Composite: draw original image, apply mask as alpha
-        const resultCanvas = document.createElement("canvas");
-        resultCanvas.width = rawImage.width;
-        resultCanvas.height = rawImage.height;
-        const resultCtx = resultCanvas.getContext("2d")!;
-
-        // Draw original
-        const origCanvas = document.createElement("canvas");
-        origCanvas.width = rawImage.width;
-        origCanvas.height = rawImage.height;
-        const origCtx = origCanvas.getContext("2d")!;
-        const origImageData = origCtx.createImageData(rawImage.width, rawImage.height);
-        for (let i = 0; i < rawImage.data.length; i++) {
-          origImageData.data[i] = rawImage.data[i];
-        }
-        origCtx.putImageData(origImageData, 0, 0);
-
-        // Draw resized mask
-        resultCtx.drawImage(maskCanvas, 0, 0, rawImage.width, rawImage.height);
-        // Use source-in to apply mask to original
-        resultCtx.globalCompositeOperation = "source-in";
-        resultCtx.drawImage(origCanvas, 0, 0);
-        resultCtx.globalCompositeOperation = "source-over";
-
-        resultBlob = await new Promise<Blob>((resolve, reject) => {
-          resultCanvas.toBlob((b) => b ? resolve(b) : reject(new Error("Failed to create blob")), "image/png");
-        });
+        // result is a RawImage — convert to blob
+        resultBlob = await (result as any).toBlob();
       }
 
       const elapsed = Math.round((performance.now() - startTime) / 100) / 10;
@@ -363,12 +518,40 @@ export default function BackgroundRemoverPage() {
     setSliderPosition(50);
     setCopySuccess(false);
     setSettingsOpen(false);
+    setChromaResultUrl(null);
+    setLumResultUrl(null);
+    setRefinedResultUrl(null);
     if (settings.bgImageUrl) {
       URL.revokeObjectURL(settings.bgImageUrl);
       setSettings((s) => ({ ...s, bgImageUrl: null, bgImageFile: null }));
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [cleanupUrls, settings.bgImageUrl]);
+
+  // Finalize algorithmic result into the standard result state
+  const finalizeAlgorithmicResult = useCallback((
+    originalUrl: string,
+    originalFile: File,
+    resultBlobUrl: string,
+    engine: RemovalEngine,
+    startTime: number,
+  ) => {
+    fetch(resultBlobUrl)
+      .then((r) => r.blob())
+      .then((resultBlob) => {
+        const elapsed = Math.round((performance.now() - startTime) / 100) / 10;
+        const resultUrl = URL.createObjectURL(resultBlob);
+        setState({
+          kind: "result",
+          originalUrl,
+          resultUrl,
+          originalFile,
+          resultBlob,
+          elapsed,
+          engine,
+        });
+      });
+  }, []);
 
   // Apply mask refinement to generate a live preview
   const applyMaskRefinement = useCallback((resultBlob: Blob, s: Settings): Promise<string> => {
@@ -380,36 +563,30 @@ export default function BackgroundRemoverPage() {
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext("2d")!;
 
-        // Apply edge feather via blur if needed
         if (s.edgeFeather > 0) {
           ctx.filter = `blur(${s.edgeFeather}px)`;
         }
         ctx.drawImage(img, 0, 0);
         ctx.filter = "none";
 
-        // Manipulate alpha channel pixel by pixel
         if (s.alphaThreshold > 0 || s.maskContrast !== 1.0 || s.foregroundBoost) {
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const d = imageData.data;
           for (let i = 3; i < d.length; i += 4) {
             let a = d[i];
 
-            // Alpha threshold: kill low-alpha pixels
             if (a < s.alphaThreshold) {
               a = 0;
             } else if (s.alphaThreshold > 0) {
-              // Remap remaining range to 0-255
               a = Math.round(((a - s.alphaThreshold) / (255 - s.alphaThreshold)) * 255);
             }
 
-            // Mask contrast: push alpha toward 0 or 255
             if (s.maskContrast !== 1.0) {
               const normalized = a / 255;
               const contrasted = Math.pow(normalized, 1 / s.maskContrast);
               a = Math.round(Math.min(255, Math.max(0, contrasted * 255)));
             }
 
-            // Foreground boost: push semi-transparent pixels toward fully opaque
             if (s.foregroundBoost && a > 20) {
               a = Math.round(Math.min(255, a * 1.5));
             }
@@ -419,7 +596,6 @@ export default function BackgroundRemoverPage() {
           ctx.putImageData(imageData, 0, 0);
         }
 
-        // If smooth edges, redraw the original on top using source-in to sharpen subject
         if (s.smoothEdges && s.edgeFeather > 0) {
           ctx.globalCompositeOperation = "source-in";
           ctx.filter = "none";
@@ -456,10 +632,9 @@ export default function BackgroundRemoverPage() {
   }, [state, settings.alphaThreshold, settings.edgeFeather, settings.maskContrast,
       settings.foregroundBoost, settings.smoothEdges, applyMaskRefinement]);
 
-  // Build final canvas: apply mask refinement + background replacement for export
+  // Build final canvas for export
   const buildFinalCanvas = useCallback(
     async (resultBlob: Blob): Promise<HTMLCanvasElement> => {
-      // First apply mask refinement
       const refinedUrl = await applyMaskRefinement(resultBlob, settings);
 
       return new Promise((resolve) => {
@@ -470,7 +645,6 @@ export default function BackgroundRemoverPage() {
           canvas.height = img.naturalHeight;
           const ctx = canvas.getContext("2d")!;
 
-          // Background replacement
           if (settings.bgReplace === "color") {
             ctx.fillStyle = settings.bgColor;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -598,6 +772,53 @@ export default function BackgroundRemoverPage() {
     });
   }, []);
 
+  // Pick color from image for chroma key
+  const handleChromaColorPick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+    const scaleX = img.naturalWidth / rect.width;
+    const scaleY = img.naturalHeight / rect.height;
+    const x = Math.floor((e.clientX - rect.left) * scaleX);
+    const y = Math.floor((e.clientY - rect.top) * scaleY);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const pixel = ctx.getImageData(x, y, 1, 1).data;
+    setChromaSettings((s) => ({ ...s, keyColor: [pixel[0], pixel[1], pixel[2]] }));
+  }, []);
+
+  // ── Engine Card Component ──
+  const EngineCard = useCallback(({ eng }: { eng: EngineOption }) => (
+    <button
+      key={eng.id}
+      onClick={() => setSelectedEngine(eng.id)}
+      className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all cursor-pointer text-center ${
+        selectedEngine === eng.id
+          ? "border-[var(--accent)] bg-[var(--accent)]/5"
+          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40"
+      }`}
+    >
+      <span className={selectedEngine === eng.id ? "text-[var(--accent)]" : "text-[var(--muted)]"}>
+        {eng.icon}
+      </span>
+      <span className="text-xs font-semibold">{eng.name}</span>
+      <div className="flex items-center gap-1">
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${eng.badgeColor}`}>
+          {eng.badge}
+        </span>
+        {eng.size && (
+          <span className="text-[10px] text-[var(--muted)]">{eng.size}</span>
+        )}
+      </div>
+      <span className="text-[10px] text-[var(--muted)] leading-tight">{eng.desc}</span>
+    </button>
+  ), [selectedEngine]);
+
+  // ── Render ──
+
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--background)" }}>
       {/* Header */}
@@ -621,37 +842,38 @@ export default function BackgroundRemoverPage() {
         {/* Upload State */}
         {state.kind === "upload" && (
           <div
-            className="w-full max-w-xl"
+            className="w-full max-w-2xl"
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
           >
             {/* Engine selector */}
-            <div className="mb-4">
-              <p className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider mb-2">AI Model</p>
-              <div className="grid grid-cols-3 gap-2">
-                {ENGINES.map((eng) => (
-                  <button
-                    key={eng.id}
-                    onClick={() => setSelectedEngine(eng.id)}
-                    className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all cursor-pointer text-center ${
-                      selectedEngine === eng.id
-                        ? "border-[var(--accent)] bg-[var(--accent)]/5"
-                        : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40"
-                    }`}
-                  >
-                    <span className={selectedEngine === eng.id ? "text-[var(--accent)]" : "text-[var(--muted)]"}>
-                      {eng.icon}
-                    </span>
-                    <span className="text-xs font-semibold">{eng.name}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                      eng.quality === "Best" ? "bg-emerald-100 text-emerald-700" :
-                      eng.quality === "Fast" ? "bg-blue-100 text-blue-700" :
-                      "bg-gray-100 text-gray-600"
-                    }`}>{eng.quality}</span>
-                    <span className="text-[10px] text-[var(--muted)] leading-tight">{eng.desc}</span>
-                  </button>
-                ))}
+            <div className="mb-5">
+              {/* AI Models section */}
+              <div className="mb-4">
+                <p className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Brain size={12} />
+                  AI Models
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {AI_ENGINES.map((eng) => (
+                    <EngineCard key={eng.id} eng={eng} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Algorithms section */}
+              <div>
+                <p className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <FlaskConical size={12} />
+                  Algorithms
+                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">No download</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {ALGO_ENGINES.map((eng) => (
+                    <EngineCard key={eng.id} eng={eng} />
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -723,6 +945,283 @@ export default function BackgroundRemoverPage() {
           </div>
         )}
 
+        {/* Chroma Key Interactive State */}
+        {state.kind === "chromakey" && (
+          <div className="w-full max-w-5xl flex flex-col lg:flex-row gap-5">
+            {/* Image area */}
+            <div className="flex-1 min-w-0">
+              <div
+                className="relative w-full rounded-xl overflow-hidden"
+                style={{
+                  background: chromaResultUrl
+                    ? "repeating-conic-gradient(#e5e5e5 0% 25%, #fff 0% 50%) 0 0 / 16px 16px"
+                    : "var(--surface)",
+                }}
+              >
+                {chromaResultUrl ? (
+                  <img
+                    src={chromaResultUrl}
+                    alt="Chroma key result preview"
+                    className="w-full block max-h-[65vh] object-contain"
+                  />
+                ) : (
+                  <img
+                    src={state.originalUrl}
+                    alt="Click to pick a key color"
+                    className="w-full block max-h-[65vh] object-contain cursor-crosshair"
+                    onClick={handleChromaColorPick}
+                  />
+                )}
+                {!chromaSettings.keyColor && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+                      <Pipette size={16} />
+                      Click on the color to remove
+                    </div>
+                  </div>
+                )}
+              </div>
+              {chromaSettings.keyColor && !chromaResultUrl && (
+                <p className="text-xs text-[var(--muted)] mt-2 text-center">Processing...</p>
+              )}
+            </div>
+
+            {/* Settings panel */}
+            <div
+              className="w-full lg:w-72 shrink-0 rounded-xl border p-4 flex flex-col gap-4 self-start"
+              style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+            >
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <Pipette size={14} />
+                Chroma Key Settings
+              </h3>
+
+              {/* Picked color */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium">Key Color</label>
+                {chromaSettings.keyColor ? (
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-8 h-8 rounded-lg border border-[var(--border)]"
+                      style={{
+                        background: `rgb(${chromaSettings.keyColor[0]}, ${chromaSettings.keyColor[1]}, ${chromaSettings.keyColor[2]})`,
+                      }}
+                    />
+                    <span className="text-xs text-[var(--muted)] tabular-nums">
+                      rgb({chromaSettings.keyColor.join(", ")})
+                    </span>
+                    <button
+                      onClick={() => {
+                        setChromaSettings((s) => ({ ...s, keyColor: null }));
+                        setChromaResultUrl(null);
+                      }}
+                      className="text-xs text-[var(--accent)] hover:underline cursor-pointer ml-auto"
+                    >
+                      Re-pick
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-[var(--muted)]">Click on the image to pick a color</p>
+                )}
+              </div>
+
+              {/* Tolerance slider */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium flex items-center justify-between">
+                  Tolerance
+                  <span className="text-[var(--muted)] font-normal tabular-nums">{chromaSettings.tolerance}</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={150}
+                  value={chromaSettings.tolerance}
+                  onChange={(e) => setChromaSettings((s) => ({ ...s, tolerance: Number(e.target.value) }))}
+                  className="w-full accent-[var(--accent)]"
+                />
+                <div className="flex justify-between text-[10px] text-[var(--muted)]">
+                  <span>Tight</span>
+                  <span>Loose</span>
+                </div>
+              </div>
+
+              {/* Pick on result image */}
+              {chromaResultUrl && (
+                <button
+                  onClick={() => {
+                    setChromaSettings((s) => ({ ...s, keyColor: null }));
+                    setChromaResultUrl(null);
+                  }}
+                  className="text-xs text-[var(--accent)] hover:underline cursor-pointer flex items-center gap-1"
+                >
+                  <Pipette size={12} />
+                  Pick a different color
+                </button>
+              )}
+
+              <hr className="border-[var(--border)]" />
+
+              {/* Accept / Back */}
+              <div className="flex flex-col gap-2">
+                {chromaResultUrl && (
+                  <button
+                    onClick={() => {
+                      const startTime = performance.now();
+                      finalizeAlgorithmicResult(
+                        state.originalUrl,
+                        state.originalFile,
+                        chromaResultUrl,
+                        "chromakey",
+                        startTime,
+                      );
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-[var(--accent)] hover:bg-[var(--accent-hover)] transition-colors cursor-pointer"
+                  >
+                    <Check size={16} />
+                    Accept Result
+                  </button>
+                )}
+                <button
+                  onClick={reset}
+                  className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-[var(--border)] bg-transparent hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                >
+                  <ArrowLeft size={14} />
+                  Back
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Luminance Interactive State */}
+        {state.kind === "luminance" && (
+          <div className="w-full max-w-5xl flex flex-col lg:flex-row gap-5">
+            {/* Image area */}
+            <div className="flex-1 min-w-0">
+              <div
+                className="relative w-full rounded-xl overflow-hidden"
+                style={{
+                  background: lumResultUrl
+                    ? "repeating-conic-gradient(#e5e5e5 0% 25%, #fff 0% 50%) 0 0 / 16px 16px"
+                    : "var(--surface)",
+                }}
+              >
+                <img
+                  src={lumResultUrl || state.originalUrl}
+                  alt={lumResultUrl ? "Luminance result preview" : "Original image"}
+                  className="w-full block max-h-[65vh] object-contain"
+                />
+              </div>
+            </div>
+
+            {/* Settings panel */}
+            <div
+              className="w-full lg:w-72 shrink-0 rounded-xl border p-4 flex flex-col gap-4 self-start"
+              style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+            >
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <Sun size={14} />
+                Luminance Settings
+              </h3>
+
+              {/* Threshold slider */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium flex items-center justify-between">
+                  Threshold
+                  <span className="text-[var(--muted)] font-normal tabular-nums">{lumSettings.threshold}</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={255}
+                  value={lumSettings.threshold}
+                  onChange={(e) => setLumSettings((s) => ({ ...s, threshold: Number(e.target.value) }))}
+                  className="w-full accent-[var(--accent)]"
+                />
+                <div className="flex justify-between text-[10px] text-[var(--muted)]">
+                  <span>0</span>
+                  <span>255</span>
+                </div>
+              </div>
+
+              {/* Softness slider */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium flex items-center justify-between">
+                  Edge Softness
+                  <span className="text-[var(--muted)] font-normal tabular-nums">{lumSettings.softness}</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={50}
+                  value={lumSettings.softness}
+                  onChange={(e) => setLumSettings((s) => ({ ...s, softness: Number(e.target.value) }))}
+                  className="w-full accent-[var(--accent)]"
+                />
+                <div className="flex justify-between text-[10px] text-[var(--muted)]">
+                  <span>Hard</span>
+                  <span>Soft</span>
+                </div>
+              </div>
+
+              {/* Invert toggle */}
+              <label className="flex items-center gap-3 cursor-pointer">
+                <button
+                  role="switch"
+                  aria-checked={lumSettings.invert}
+                  onClick={() => setLumSettings((s) => ({ ...s, invert: !s.invert }))}
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200 cursor-pointer ${
+                    lumSettings.invert ? "bg-[var(--accent)]" : "bg-[var(--border)]"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform duration-200 mt-0.5 ${
+                      lumSettings.invert ? "translate-x-4 ml-0.5" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+                <div>
+                  <span className="text-xs font-medium">Remove dark instead</span>
+                  <p className="text-[10px] text-[var(--muted)]">
+                    {lumSettings.invert ? "Removing dark backgrounds" : "Removing light backgrounds"}
+                  </p>
+                </div>
+              </label>
+
+              <hr className="border-[var(--border)]" />
+
+              {/* Accept / Back */}
+              <div className="flex flex-col gap-2">
+                {lumResultUrl && (
+                  <button
+                    onClick={() => {
+                      const startTime = performance.now();
+                      finalizeAlgorithmicResult(
+                        state.originalUrl,
+                        state.originalFile,
+                        lumResultUrl,
+                        "luminance",
+                        startTime,
+                      );
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white bg-[var(--accent)] hover:bg-[var(--accent-hover)] transition-colors cursor-pointer"
+                  >
+                    <Check size={16} />
+                    Accept Result
+                  </button>
+                )}
+                <button
+                  onClick={reset}
+                  className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-[var(--border)] bg-transparent hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                >
+                  <ArrowLeft size={14} />
+                  Back
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Error State */}
         {state.kind === "error" && (
           <div className="w-full max-w-md flex flex-col items-center gap-5 text-center">
@@ -773,7 +1272,7 @@ export default function BackgroundRemoverPage() {
                 updateSliderPosition(e.touches[0].clientX);
               }}
             >
-              {/* After (result) - base layer, uses refined version if mask settings active */}
+              {/* After (result) - base layer */}
               <img
                 src={refinedResultUrl || state.resultUrl}
                 alt="Result with background removed"
@@ -849,7 +1348,7 @@ export default function BackgroundRemoverPage() {
                 <span>
                   Result: <strong className="text-[var(--foreground)]">{formatBytes(state.resultBlob.size)}</strong>
                 </span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--surface-hover)] border border-[var(--border)]">
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${ENGINES.find((e) => e.id === state.engine)?.badgeColor ?? "bg-gray-100 text-gray-600"} border border-[var(--border)]`}>
                   {ENGINES.find((e) => e.id === state.engine)?.name ?? "Unknown"}
                 </span>
               </div>
@@ -861,7 +1360,7 @@ export default function BackgroundRemoverPage() {
                     <RotateCcw size={12} />
                     Try another model
                   </button>
-                  <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block w-52 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg z-10 py-1">
+                  <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block w-56 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg z-10 py-1">
                     {ENGINES.filter((e) => e.id !== state.engine).map((eng) => (
                       <button
                         key={eng.id}
@@ -870,11 +1369,9 @@ export default function BackgroundRemoverPage() {
                       >
                         {eng.icon}
                         <span className="flex-1">{eng.name}</span>
-                        <span className={`text-[9px] px-1 py-0.5 rounded-full ${
-                          eng.quality === "Best" ? "bg-emerald-100 text-emerald-700" :
-                          eng.quality === "Fast" ? "bg-blue-100 text-blue-700" :
-                          "bg-gray-100 text-gray-600"
-                        }`}>{eng.quality}</span>
+                        <span className={`text-[9px] px-1 py-0.5 rounded-full ${eng.badgeColor}`}>
+                          {eng.badge}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -1106,7 +1603,7 @@ export default function BackgroundRemoverPage() {
                       Mask Refinement
                     </label>
                     <p className="text-xs text-[var(--muted)] -mt-1">
-                      Adjust these to clean up the AI mask — remove halos, sharpen edges, or fine-tune transparency.
+                      Adjust these to clean up the AI mask -- remove halos, sharpen edges, or fine-tune transparency.
                     </p>
 
                     <div className="grid gap-4 sm:grid-cols-2">
