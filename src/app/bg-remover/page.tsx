@@ -14,6 +14,9 @@ import {
   Image as ImageIcon,
   Sliders,
   ChevronDown,
+  Cpu,
+  Sparkles,
+  Zap,
 } from "lucide-react";
 
 // ── Types ──
@@ -21,10 +24,43 @@ import {
 type AppState =
   | { kind: "upload" }
   | { kind: "processing"; originalUrl: string; originalFile: File; statusText: string; progress: number }
-  | { kind: "result"; originalUrl: string; resultUrl: string; originalFile: File; resultBlob: Blob; elapsed: number }
+  | { kind: "result"; originalUrl: string; resultUrl: string; originalFile: File; resultBlob: Blob; elapsed: number; engine: RemovalEngine }
   | { kind: "error"; message: string; originalFile: File | null };
 
 type OutputFormat = "png" | "jpeg" | "webp";
+type RemovalEngine = "imgly" | "rmbg2" | "rmbg14";
+
+interface EngineOption {
+  id: RemovalEngine;
+  name: string;
+  desc: string;
+  icon: React.ReactNode;
+  quality: string;
+}
+
+const ENGINES: EngineOption[] = [
+  {
+    id: "rmbg2",
+    name: "RMBG 2.0",
+    desc: "Best quality, BRIA AI latest model",
+    icon: <Sparkles size={16} />,
+    quality: "Best",
+  },
+  {
+    id: "rmbg14",
+    name: "RMBG 1.4",
+    desc: "Fast and reliable, good for most images",
+    icon: <Zap size={16} />,
+    quality: "Fast",
+  },
+  {
+    id: "imgly",
+    name: "ISNET",
+    desc: "IMG.LY engine, lightweight model",
+    icon: <Cpu size={16} />,
+    quality: "Light",
+  },
+];
 
 interface Settings {
   outputQuality: number;
@@ -71,6 +107,7 @@ const FORMAT_EXT: Record<OutputFormat, string> = {
 
 export default function BackgroundRemoverPage() {
   const [state, setState] = useState<AppState>({ kind: "upload" });
+  const [selectedEngine, setSelectedEngine] = useState<RemovalEngine>("rmbg2");
   const [isDragging, setIsDragging] = useState(false);
   const [sliderPosition, setSliderPosition] = useState(50);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -134,36 +171,131 @@ export default function BackgroundRemoverPage() {
     }
   }, [state]);
 
-  const processImage = useCallback(async (file: File) => {
+  const processImage = useCallback(async (file: File, engine?: RemovalEngine) => {
+    const eng = engine ?? selectedEngine;
     const originalUrl = URL.createObjectURL(file);
 
     setState({
       kind: "processing",
       originalUrl,
       originalFile: file,
-      statusText: "Downloading AI model...",
+      statusText: "Loading AI model...",
       progress: 0,
     });
 
     const startTime = performance.now();
 
     try {
-      const { removeBackground } = await import("@imgly/background-removal");
+      let resultBlob: Blob;
 
-      const resultBlob = await removeBackground(file, {
-        progress: (key: string, current: number, total: number) => {
-          const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-          const isDownloading = key.includes("fetch") || key.includes("download") || key.includes("load");
-          setState((prev) => {
-            if (prev.kind !== "processing") return prev;
-            return {
-              ...prev,
-              statusText: isDownloading ? "Downloading AI model..." : "Removing background...",
-              progress: pct,
-            };
-          });
-        },
-      });
+      if (eng === "imgly") {
+        // IMG.LY ISNET engine
+        const { removeBackground } = await import("@imgly/background-removal");
+        resultBlob = await removeBackground(file, {
+          progress: (key: string, current: number, total: number) => {
+            const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+            const isDownloading = key.includes("fetch") || key.includes("download") || key.includes("load");
+            setState((prev) => {
+              if (prev.kind !== "processing") return prev;
+              return { ...prev, statusText: isDownloading ? "Downloading ISNET model..." : "Removing background...", progress: pct };
+            });
+          },
+        });
+      } else {
+        // HuggingFace Transformers.js — RMBG models
+        const modelId = eng === "rmbg2"
+          ? "briaai/RMBG-2.0"
+          : "briaai/RMBG-1.4";
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: `Loading ${eng === "rmbg2" ? "RMBG 2.0" : "RMBG 1.4"}...`, progress: 10 } : prev);
+
+        const { AutoModel, AutoProcessor, RawImage } = await import("@huggingface/transformers");
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Downloading model weights...", progress: 20 } : prev);
+
+        const model = await AutoModel.from_pretrained(modelId, {
+          device: "webgpu" in navigator ? "webgpu" : "wasm",
+          dtype: "fp32",
+        });
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Loading processor...", progress: 40 } : prev);
+
+        const processor = await AutoProcessor.from_pretrained(modelId);
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Processing image...", progress: 50 } : prev);
+
+        // Load image
+        const imageUrl = URL.createObjectURL(file);
+        const rawImage = await RawImage.fromURL(imageUrl);
+        URL.revokeObjectURL(imageUrl);
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Running AI model...", progress: 60 } : prev);
+
+        // Process
+        const { pixel_values } = await processor(rawImage);
+        const { output } = await model({ input: pixel_values });
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Generating mask...", progress: 80 } : prev);
+
+        // Post-process the mask
+        const maskData = output[0][0].data;
+        const maskH = output[0][0].dims[0] ?? rawImage.height;
+        const maskW = output[0][0].dims[1] ?? rawImage.width;
+
+        // Create mask image and resize to original dimensions
+        const maskCanvas = document.createElement("canvas");
+        maskCanvas.width = maskW;
+        maskCanvas.height = maskH;
+        const maskCtx = maskCanvas.getContext("2d")!;
+        const maskImageData = maskCtx.createImageData(maskW, maskH);
+
+        // Normalize mask values to 0-255
+        let minVal = Infinity, maxVal = -Infinity;
+        for (let i = 0; i < maskData.length; i++) {
+          if (maskData[i] < minVal) minVal = maskData[i];
+          if (maskData[i] > maxVal) maxVal = maskData[i];
+        }
+        const range = maxVal - minVal || 1;
+
+        for (let i = 0; i < maskData.length; i++) {
+          const alpha = Math.round(((maskData[i] - minVal) / range) * 255);
+          maskImageData.data[i * 4] = 255;
+          maskImageData.data[i * 4 + 1] = 255;
+          maskImageData.data[i * 4 + 2] = 255;
+          maskImageData.data[i * 4 + 3] = alpha;
+        }
+        maskCtx.putImageData(maskImageData, 0, 0);
+
+        setState((prev) => prev.kind === "processing" ? { ...prev, statusText: "Compositing result...", progress: 90 } : prev);
+
+        // Composite: draw original image, apply mask as alpha
+        const resultCanvas = document.createElement("canvas");
+        resultCanvas.width = rawImage.width;
+        resultCanvas.height = rawImage.height;
+        const resultCtx = resultCanvas.getContext("2d")!;
+
+        // Draw original
+        const origCanvas = document.createElement("canvas");
+        origCanvas.width = rawImage.width;
+        origCanvas.height = rawImage.height;
+        const origCtx = origCanvas.getContext("2d")!;
+        const origImageData = origCtx.createImageData(rawImage.width, rawImage.height);
+        for (let i = 0; i < rawImage.data.length; i++) {
+          origImageData.data[i] = rawImage.data[i];
+        }
+        origCtx.putImageData(origImageData, 0, 0);
+
+        // Draw resized mask
+        resultCtx.drawImage(maskCanvas, 0, 0, rawImage.width, rawImage.height);
+        // Use source-in to apply mask to original
+        resultCtx.globalCompositeOperation = "source-in";
+        resultCtx.drawImage(origCanvas, 0, 0);
+        resultCtx.globalCompositeOperation = "source-over";
+
+        resultBlob = await new Promise<Blob>((resolve, reject) => {
+          resultCanvas.toBlob((b) => b ? resolve(b) : reject(new Error("Failed to create blob")), "image/png");
+        });
+      }
 
       const elapsed = Math.round((performance.now() - startTime) / 100) / 10;
       const resultUrl = URL.createObjectURL(resultBlob);
@@ -175,8 +307,10 @@ export default function BackgroundRemoverPage() {
         originalFile: file,
         resultBlob,
         elapsed,
+        engine: eng,
       });
     } catch (err) {
+      console.error("Background removal error:", err);
       URL.revokeObjectURL(originalUrl);
       setState({
         kind: "error",
@@ -184,7 +318,7 @@ export default function BackgroundRemoverPage() {
         originalFile: file,
       });
     }
-  }, []);
+  }, [selectedEngine]);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -492,25 +626,54 @@ export default function BackgroundRemoverPage() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
           >
+            {/* Engine selector */}
+            <div className="mb-4">
+              <p className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider mb-2">AI Model</p>
+              <div className="grid grid-cols-3 gap-2">
+                {ENGINES.map((eng) => (
+                  <button
+                    key={eng.id}
+                    onClick={() => setSelectedEngine(eng.id)}
+                    className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all cursor-pointer text-center ${
+                      selectedEngine === eng.id
+                        ? "border-[var(--accent)] bg-[var(--accent)]/5"
+                        : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40"
+                    }`}
+                  >
+                    <span className={selectedEngine === eng.id ? "text-[var(--accent)]" : "text-[var(--muted)]"}>
+                      {eng.icon}
+                    </span>
+                    <span className="text-xs font-semibold">{eng.name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                      eng.quality === "Best" ? "bg-emerald-100 text-emerald-700" :
+                      eng.quality === "Fast" ? "bg-blue-100 text-blue-700" :
+                      "bg-gray-100 text-gray-600"
+                    }`}>{eng.quality}</span>
+                    <span className="text-[10px] text-[var(--muted)] leading-tight">{eng.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className={`w-full rounded-2xl border-2 border-dashed p-12 md:p-16 flex flex-col items-center gap-4 cursor-pointer transition-all duration-200 ${
+              className={`w-full rounded-2xl border-2 border-dashed p-10 md:p-14 flex flex-col items-center gap-4 cursor-pointer transition-all duration-200 ${
                 isDragging
                   ? "border-[var(--accent)] bg-[var(--surface-hover)]"
                   : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)] hover:bg-[var(--surface-hover)]"
               }`}
             >
               <div
-                className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-colors duration-200 ${
+                className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors duration-200 ${
                   isDragging ? "bg-[var(--accent)] text-white" : "bg-[var(--surface-hover)] text-[var(--muted)]"
                 }`}
               >
-                <Upload size={32} strokeWidth={1.5} />
+                <Upload size={28} strokeWidth={1.5} />
               </div>
               <div className="text-center">
-                <p className="font-medium text-base mb-1">Drop image here or click to upload</p>
-                <p className="text-sm text-[var(--muted)]">PNG, JPG, WebP supported</p>
+                <p className="font-medium text-sm mb-0.5">Drop image here or click to upload</p>
+                <p className="text-xs text-[var(--muted)]">PNG, JPG, WebP supported</p>
               </div>
             </button>
             <input
@@ -679,15 +842,44 @@ export default function BackgroundRemoverPage() {
 
             {/* Info row */}
             <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--muted)]">
-              <div className="flex flex-wrap gap-4">
+              <div className="flex flex-wrap gap-4 items-center">
                 <span>
                   Original: <strong className="text-[var(--foreground)]">{formatBytes(state.originalFile.size)}</strong>
                 </span>
                 <span>
                   Result: <strong className="text-[var(--foreground)]">{formatBytes(state.resultBlob.size)}</strong>
                 </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--surface-hover)] border border-[var(--border)]">
+                  {ENGINES.find((e) => e.id === state.engine)?.name ?? "Unknown"}
+                </span>
               </div>
-              <span>Processed in {state.elapsed}s</span>
+              <div className="flex items-center gap-3">
+                <span>Processed in {state.elapsed}s</span>
+                {/* Re-run with different engine */}
+                <div className="relative group">
+                  <button className="text-xs text-[var(--accent)] hover:underline cursor-pointer flex items-center gap-1">
+                    <RotateCcw size={12} />
+                    Try another model
+                  </button>
+                  <div className="absolute bottom-full right-0 mb-1 hidden group-hover:block w-52 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg z-10 py-1">
+                    {ENGINES.filter((e) => e.id !== state.engine).map((eng) => (
+                      <button
+                        key={eng.id}
+                        onClick={() => processImage(state.originalFile, eng.id)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                      >
+                        {eng.icon}
+                        <span className="flex-1">{eng.name}</span>
+                        <span className={`text-[9px] px-1 py-0.5 rounded-full ${
+                          eng.quality === "Best" ? "bg-emerald-100 text-emerald-700" :
+                          eng.quality === "Fast" ? "bg-blue-100 text-blue-700" :
+                          "bg-gray-100 text-gray-600"
+                        }`}>{eng.quality}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Action buttons */}
