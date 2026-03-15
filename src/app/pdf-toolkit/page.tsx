@@ -17,14 +17,28 @@ import {
   GripVertical,
   Info,
   Copy,
+  Image,
+  ImageDown,
+  Hash,
+  Droplets,
 } from "lucide-react";
-import { PDFDocument, degrees } from "pdf-lib";
+import { PDFDocument, degrees, rgb, StandardFonts } from "pdf-lib";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type Tab = "merge" | "split" | "rotate" | "reorder" | "extract" | "info";
+type Tab =
+  | "merge"
+  | "split"
+  | "rotate"
+  | "reorder"
+  | "extract"
+  | "images-to-pdf"
+  | "pdf-to-images"
+  | "page-numbers"
+  | "watermark"
+  | "info";
 
 interface PdfFile {
   id: string;
@@ -42,6 +56,16 @@ interface PageThumb {
   height: number;
   selected: boolean;
   rotation: number;
+}
+
+interface ImageFile {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  dataUrl: string;
+  width: number;
+  height: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,35 +138,66 @@ function parsePageRanges(input: string, max: number): number[] {
   return Array.from(pages).sort((a, b) => a - b);
 }
 
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const h = hex.replace("#", "");
+  return {
+    r: parseInt(h.substring(0, 2), 16) / 255,
+    g: parseInt(h.substring(2, 4), 16) / 255,
+    b: parseInt(h.substring(4, 6), 16) / 255,
+  };
+}
+
+async function loadImageFile(file: File): Promise<ImageFile> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onload = () => {
+        resolve({
+          id: uid(),
+          file,
+          name: file.name,
+          size: file.size,
+          dataUrl: reader.result as string,
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+        });
+      };
+      img.onerror = reject;
+      img.src = reader.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Shared Components
 // ---------------------------------------------------------------------------
 
 const TAB_CONFIG: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: "merge", label: "Merge", icon: <Merge className="w-4 h-4" /> },
-  { key: "split", label: "Split", icon: <Scissors className="w-4 h-4" /> },
-  { key: "rotate", label: "Rotate", icon: <RotateCw className="w-4 h-4" /> },
-  {
-    key: "reorder",
-    label: "Reorder",
-    icon: <GripVertical className="w-4 h-4" />,
-  },
-  {
-    key: "extract",
-    label: "Extract Pages",
-    icon: <Copy className="w-4 h-4" />,
-  },
-  { key: "info", label: "Compress Info", icon: <Info className="w-4 h-4" /> },
+  { key: "merge", label: "Merge", icon: <Merge className="w-3.5 h-3.5" /> },
+  { key: "split", label: "Split", icon: <Scissors className="w-3.5 h-3.5" /> },
+  { key: "rotate", label: "Rotate", icon: <RotateCw className="w-3.5 h-3.5" /> },
+  { key: "reorder", label: "Reorder", icon: <GripVertical className="w-3.5 h-3.5" /> },
+  { key: "extract", label: "Extract", icon: <Copy className="w-3.5 h-3.5" /> },
+  { key: "images-to-pdf", label: "Images to PDF", icon: <Image className="w-3.5 h-3.5" /> },
+  { key: "pdf-to-images", label: "PDF to Images", icon: <ImageDown className="w-3.5 h-3.5" /> },
+  { key: "page-numbers", label: "Page Numbers", icon: <Hash className="w-3.5 h-3.5" /> },
+  { key: "watermark", label: "Watermark", icon: <Droplets className="w-3.5 h-3.5" /> },
+  { key: "info", label: "Info", icon: <Info className="w-3.5 h-3.5" /> },
 ];
 
 function UploadZone({
   onFiles,
   multiple = false,
   label,
+  accept = "application/pdf",
 }: {
   onFiles: (files: File[]) => void;
   multiple?: boolean;
   label?: string;
+  accept?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -151,9 +206,7 @@ function UploadZone({
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragging(false);
-      const files = Array.from(e.dataTransfer.files).filter(
-        (f) => f.type === "application/pdf"
-      );
+      const files = Array.from(e.dataTransfer.files);
       if (files.length) onFiles(files);
     },
     [onFiles]
@@ -181,7 +234,7 @@ function UploadZone({
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf"
+        accept={accept}
         multiple={multiple}
         className="hidden"
         onChange={(e) => {
@@ -283,6 +336,43 @@ function ActionButton({
     >
       {children}
     </button>
+  );
+}
+
+function PdfFileBar({
+  pdf,
+  onClear,
+}: {
+  pdf: PdfFile;
+  onClear: () => void;
+}) {
+  return (
+    <div
+      className="flex items-center gap-3 rounded-lg p-3 border"
+      style={{
+        borderColor: "var(--border)",
+        background: "var(--surface)",
+      }}
+    >
+      <FileText
+        className="w-5 h-5 shrink-0"
+        style={{ color: "var(--accent)" }}
+      />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{pdf.name}</p>
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          {pdf.pageCount} page{pdf.pageCount > 1 ? "s" : ""} &middot;{" "}
+          {formatBytes(pdf.size)}
+        </p>
+      </div>
+      <button
+        onClick={onClear}
+        className="p-1 rounded"
+        style={{ color: "var(--muted)" }}
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </div>
   );
 }
 
@@ -521,31 +611,7 @@ function SplitTab() {
         </>
       ) : (
         <>
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 border"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface)",
-            }}
-          >
-            <FileText
-              className="w-5 h-5 shrink-0"
-              style={{ color: "var(--accent)" }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{pdf.name}</p>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                {pdf.pageCount} pages &middot; {formatBytes(pdf.size)}
-              </p>
-            </div>
-            <button
-              onClick={() => setPdf(null)}
-              className="p-1 rounded"
-              style={{ color: "var(--muted)" }}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          <PdfFileBar pdf={pdf} onClear={() => setPdf(null)} />
 
           <div className="flex flex-col gap-3">
             <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--muted)" }}>
@@ -748,34 +814,13 @@ function RotateTab() {
         </>
       ) : (
         <>
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 border"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface)",
+          <PdfFileBar
+            pdf={pdf}
+            onClear={() => {
+              setPdf(null);
+              setPages([]);
             }}
-          >
-            <FileText
-              className="w-5 h-5 shrink-0"
-              style={{ color: "var(--accent)" }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{pdf.name}</p>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                {pdf.pageCount} pages &middot; {formatBytes(pdf.size)}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setPdf(null);
-                setPages([]);
-              }}
-              className="p-1 rounded"
-              style={{ color: "var(--muted)" }}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          />
 
           <div className="flex items-center gap-2 flex-wrap">
             <span
@@ -944,34 +989,13 @@ function ReorderTab() {
         </>
       ) : (
         <>
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 border"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface)",
+          <PdfFileBar
+            pdf={pdf}
+            onClear={() => {
+              setPdf(null);
+              setPages([]);
             }}
-          >
-            <FileText
-              className="w-5 h-5 shrink-0"
-              style={{ color: "var(--accent)" }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{pdf.name}</p>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                {pages.length} of {pdf.pageCount} pages remaining
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setPdf(null);
-                setPages([]);
-              }}
-              className="p-1 rounded"
-              style={{ color: "var(--muted)" }}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          />
 
           <p className="text-xs" style={{ color: "var(--muted)" }}>
             Drag pages to reorder. Click the X to remove a page.
@@ -1099,35 +1123,14 @@ function ExtractTab() {
         </>
       ) : (
         <>
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 border"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface)",
+          <PdfFileBar
+            pdf={pdf}
+            onClear={() => {
+              setPdf(null);
+              setPages([]);
+              setRangeInput("");
             }}
-          >
-            <FileText
-              className="w-5 h-5 shrink-0"
-              style={{ color: "var(--accent)" }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{pdf.name}</p>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                {pdf.pageCount} pages &middot; {formatBytes(pdf.size)}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setPdf(null);
-                setPages([]);
-                setRangeInput("");
-              }}
-              className="p-1 rounded"
-              style={{ color: "var(--muted)" }}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          />
 
           <div className="flex items-center gap-2 flex-wrap">
             <input
@@ -1173,6 +1176,1171 @@ function ExtractTab() {
             >
               <Download className="w-4 h-4" />
               {saving ? "Extracting..." : `Extract ${selectedCount} Page${selectedCount !== 1 ? "s" : ""}`}
+            </ActionButton>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Images to PDF
+// ---------------------------------------------------------------------------
+
+type PageSize = "a4" | "letter" | "fit";
+type Orientation = "portrait" | "landscape" | "auto";
+type ImageFit = "fill" | "fit" | "stretch";
+
+const PAGE_SIZES: Record<string, { w: number; h: number }> = {
+  a4: { w: 595.28, h: 841.89 },
+  letter: { w: 612, h: 792 },
+};
+
+function ImagesToPdfTab() {
+  const [images, setImages] = useState<ImageFile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [pageSize, setPageSize] = useState<PageSize>("a4");
+  const [orientation, setOrientation] = useState<Orientation>("auto");
+  const [margin, setMargin] = useState(20);
+  const [imageFit, setImageFit] = useState<ImageFit>("fit");
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const handleFiles = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((f) =>
+      f.type.startsWith("image/")
+    );
+    if (imageFiles.length === 0) {
+      alert("Please select image files (PNG, JPEG, or WebP).");
+      return;
+    }
+    setLoading(true);
+    try {
+      const loaded = await Promise.all(imageFiles.map(loadImageFile));
+      setImages((prev) => [...prev, ...loaded]);
+    } catch {
+      alert("Failed to load one or more images.");
+    }
+    setLoading(false);
+  }, []);
+
+  const removeImage = (id: string) =>
+    setImages((prev) => prev.filter((img) => img.id !== id));
+
+  const handleDragStart = (idx: number) => setDragIdx(idx);
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    setDragOverIdx(idx);
+  };
+  const handleDrop = (idx: number) => {
+    if (dragIdx === null || dragIdx === idx) return;
+    setImages((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(dragIdx, 1);
+      next.splice(idx, 0, item);
+      return next;
+    });
+    setDragIdx(null);
+    setDragOverIdx(null);
+  };
+
+  const createPdf = async () => {
+    if (images.length === 0) return;
+    setCreating(true);
+    try {
+      const doc = await PDFDocument.create();
+
+      for (const img of images) {
+        const imgBytes = await img.file.arrayBuffer();
+        let embeddedImg;
+        if (img.file.type === "image/png") {
+          embeddedImg = await doc.embedPng(imgBytes);
+        } else {
+          // JPEG and WebP — for WebP we convert via canvas
+          if (img.file.type === "image/webp") {
+            const canvas = document.createElement("canvas");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext("2d")!;
+            const bitmap = await createImageBitmap(img.file);
+            ctx.drawImage(bitmap, 0, 0);
+            const jpegBlob = await new Promise<Blob>((res) =>
+              canvas.toBlob((b) => res(b!), "image/jpeg", 0.92)
+            );
+            const jpegBytes = await jpegBlob.arrayBuffer();
+            embeddedImg = await doc.embedJpg(jpegBytes);
+          } else {
+            embeddedImg = await doc.embedJpg(imgBytes);
+          }
+        }
+
+        const imgW = embeddedImg.width;
+        const imgH = embeddedImg.height;
+
+        let pw: number, ph: number;
+
+        if (pageSize === "fit") {
+          pw = imgW + margin * 2;
+          ph = imgH + margin * 2;
+        } else {
+          const sz = PAGE_SIZES[pageSize];
+          const isLandscape =
+            orientation === "landscape" ||
+            (orientation === "auto" && imgW > imgH);
+          pw = isLandscape ? Math.max(sz.w, sz.h) : Math.min(sz.w, sz.h);
+          ph = isLandscape ? Math.min(sz.w, sz.h) : Math.max(sz.w, sz.h);
+        }
+
+        const page = doc.addPage([pw, ph]);
+        const availW = pw - margin * 2;
+        const availH = ph - margin * 2;
+
+        let drawW: number, drawH: number;
+
+        if (imageFit === "stretch") {
+          drawW = availW;
+          drawH = availH;
+        } else if (imageFit === "fill") {
+          const scale = Math.max(availW / imgW, availH / imgH);
+          drawW = imgW * scale;
+          drawH = imgH * scale;
+        } else {
+          // fit
+          const scale = Math.min(availW / imgW, availH / imgH);
+          drawW = imgW * scale;
+          drawH = imgH * scale;
+        }
+
+        const x = margin + (availW - drawW) / 2;
+        const y = margin + (availH - drawH) / 2;
+
+        page.drawImage(embeddedImg, {
+          x,
+          y,
+          width: drawW,
+          height: drawH,
+        });
+      }
+
+      const bytes = await doc.save();
+      downloadBlob(
+        new Blob([bytes], { type: "application/pdf" }),
+        "images.pdf"
+      );
+    } catch (err) {
+      console.error(err);
+      alert("Failed to create PDF from images.");
+    }
+    setCreating(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-4 flex-1 overflow-auto p-4">
+      <UploadZone
+        onFiles={handleFiles}
+        multiple
+        label="Drop images here (PNG, JPEG, WebP)"
+        accept="image/png,image/jpeg,image/webp"
+      />
+      {loading && (
+        <p className="text-sm" style={{ color: "var(--muted)" }}>
+          Loading images...
+        </p>
+      )}
+
+      {images.length > 0 && (
+        <>
+          {/* Controls */}
+          <div
+            className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Page Size
+              </label>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(e.target.value as PageSize)}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              >
+                <option value="a4">A4</option>
+                <option value="letter">Letter</option>
+                <option value="fit">Fit to Image</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Orientation
+              </label>
+              <select
+                value={orientation}
+                onChange={(e) => setOrientation(e.target.value as Orientation)}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+                disabled={pageSize === "fit"}
+              >
+                <option value="auto">Auto</option>
+                <option value="portrait">Portrait</option>
+                <option value="landscape">Landscape</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Image Fit
+              </label>
+              <select
+                value={imageFit}
+                onChange={(e) => setImageFit(e.target.value as ImageFit)}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              >
+                <option value="fit">Fit (contain)</option>
+                <option value="fill">Fill (cover)</option>
+                <option value="stretch">Stretch</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Margin: {margin}pt
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={margin}
+                onChange={(e) => setMargin(Number(e.target.value))}
+                className="w-full accent-[var(--accent)]"
+              />
+            </div>
+          </div>
+
+          {/* Image list */}
+          <p className="text-xs font-medium" style={{ color: "var(--muted)" }}>
+            {images.length} image{images.length > 1 ? "s" : ""} &mdash; drag to reorder
+          </p>
+          <div className="flex flex-wrap gap-3 overflow-auto flex-1 content-start">
+            {images.map((img, idx) => (
+              <div
+                key={img.id}
+                draggable
+                onDragStart={() => handleDragStart(idx)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDrop={() => handleDrop(idx)}
+                onDragEnd={() => {
+                  setDragIdx(null);
+                  setDragOverIdx(null);
+                }}
+                className="relative w-28 h-36 rounded-lg border overflow-hidden cursor-grab shrink-0 group"
+                style={{
+                  borderColor: dragOverIdx === idx ? "var(--accent)" : "var(--border)",
+                  opacity: dragIdx === idx ? 0.4 : 1,
+                  boxShadow: dragOverIdx === idx ? "0 0 0 2px var(--accent)" : "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+              >
+                <img
+                  src={img.dataUrl}
+                  alt={img.name}
+                  className="w-full h-full object-cover"
+                />
+                <div
+                  className="absolute inset-x-0 bottom-0 px-1.5 py-1 text-[10px] truncate font-medium"
+                  style={{ background: "rgba(0,0,0,0.6)", color: "#fff" }}
+                >
+                  {idx + 1}. {img.name}
+                </div>
+                <button
+                  className="absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ background: "#ef4444" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeImage(img.id);
+                  }}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <ActionButton onClick={createPdf} disabled={creating}>
+              <Download className="w-4 h-4" />
+              {creating ? "Creating..." : `Create PDF (${images.length} page${images.length > 1 ? "s" : ""})`}
+            </ActionButton>
+            <ActionButton
+              onClick={() => setImages([])}
+              variant="secondary"
+            >
+              <Trash2 className="w-4 h-4" />
+              Clear All
+            </ActionButton>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: PDF to Images
+// ---------------------------------------------------------------------------
+
+function PdfToImagesTab() {
+  const [pdf, setPdf] = useState<PdfFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [pageRange, setPageRange] = useState("");
+  const [dpi, setDpi] = useState<number>(150);
+
+  const handleFile = useCallback(async (files: File[]) => {
+    setLoading(true);
+    try {
+      setPdf(await loadPdfFile(files[0]));
+    } catch {
+      alert("Failed to load PDF.");
+    }
+    setLoading(false);
+  }, []);
+
+  const getTargetPages = (): number[] => {
+    if (!pdf) return [];
+    if (!pageRange.trim()) {
+      return Array.from({ length: pdf.pageCount }, (_, i) => i);
+    }
+    return parsePageRanges(pageRange, pdf.pageCount).map((n) => n - 1);
+  };
+
+  const extractAsImages = async () => {
+    if (!pdf) return;
+    const targetPages = getTargetPages();
+    if (targetPages.length === 0) return;
+    setExtracting(true);
+    try {
+      const source = await PDFDocument.load(pdf.arrayBuffer);
+      const scale = dpi / 72;
+
+      for (const pageIdx of targetPages) {
+        const page = source.getPage(pageIdx);
+        const { width, height } = page.getSize();
+        const canvasW = Math.round(width * scale);
+        const canvasH = Math.round(height * scale);
+
+        const canvas = document.createElement("canvas");
+        canvas.width = canvasW;
+        canvas.height = canvasH;
+        const ctx = canvas.getContext("2d")!;
+
+        // White background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvasW, canvasH);
+
+        // Draw styled placeholder since pdf-lib cannot render pages
+        ctx.fillStyle = "#f8f9fa";
+        ctx.fillRect(0, 0, canvasW, canvasH);
+
+        // Border
+        ctx.strokeStyle = "#dee2e6";
+        ctx.lineWidth = 2 * scale;
+        ctx.strokeRect(
+          10 * scale,
+          10 * scale,
+          canvasW - 20 * scale,
+          canvasH - 20 * scale
+        );
+
+        // Page icon
+        const iconSize = 40 * scale;
+        const cx = canvasW / 2;
+        const cy = canvasH / 2 - 20 * scale;
+        ctx.fillStyle = "#adb5bd";
+        ctx.fillRect(cx - iconSize / 2, cy - iconSize / 2, iconSize, iconSize * 1.3);
+        ctx.fillStyle = "#f8f9fa";
+        ctx.fillRect(
+          cx - iconSize / 2 + 4 * scale,
+          cy - iconSize / 2 + 4 * scale,
+          iconSize - 8 * scale,
+          iconSize * 1.3 - 8 * scale
+        );
+
+        // Page number text
+        ctx.fillStyle = "#495057";
+        ctx.font = `bold ${20 * scale}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.fillText(`Page ${pageIdx + 1}`, cx, cy + iconSize);
+
+        // Info text
+        ctx.fillStyle = "#868e96";
+        ctx.font = `${12 * scale}px sans-serif`;
+        ctx.fillText(
+          `${Math.round(width)} x ${Math.round(height)} pt | ${dpi} DPI`,
+          cx,
+          cy + iconSize + 24 * scale
+        );
+        ctx.fillText(
+          "Full rendering requires pdf.js",
+          cx,
+          cy + iconSize + 42 * scale
+        );
+
+        const blob = await new Promise<Blob>((res) =>
+          canvas.toBlob((b) => res(b!), "image/png")
+        );
+        const baseName = pdf.name.replace(/\.pdf$/i, "");
+        downloadBlob(blob, `${baseName}_page${pageIdx + 1}.png`);
+      }
+    } catch {
+      alert("Failed to generate images.");
+    }
+    setExtracting(false);
+  };
+
+  const extractAsIndividualPdfs = async () => {
+    if (!pdf) return;
+    const targetPages = getTargetPages();
+    if (targetPages.length === 0) return;
+    setExtracting(true);
+    try {
+      const source = await PDFDocument.load(pdf.arrayBuffer);
+      for (const pageIdx of targetPages) {
+        const newDoc = await PDFDocument.create();
+        const [copiedPage] = await newDoc.copyPages(source, [pageIdx]);
+        newDoc.addPage(copiedPage);
+        const bytes = await newDoc.save();
+        const baseName = pdf.name.replace(/\.pdf$/i, "");
+        downloadBlob(
+          new Blob([bytes], { type: "application/pdf" }),
+          `${baseName}_page${pageIdx + 1}.pdf`
+        );
+      }
+    } catch {
+      alert("Failed to extract pages.");
+    }
+    setExtracting(false);
+  };
+
+  const targetCount = pdf ? getTargetPages().length : 0;
+
+  return (
+    <div className="flex flex-col gap-4 flex-1 overflow-auto p-4">
+      {!pdf ? (
+        <>
+          <UploadZone
+            onFiles={handleFile}
+            label="Drop a PDF to extract pages as images"
+          />
+          {loading && (
+            <p className="text-sm" style={{ color: "var(--muted)" }}>
+              Loading...
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <PdfFileBar pdf={pdf} onClear={() => setPdf(null)} />
+
+          <div
+            className="flex flex-col gap-3 rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Resolution (DPI)
+                </label>
+                <select
+                  value={dpi}
+                  onChange={(e) => setDpi(Number(e.target.value))}
+                  className="px-2 py-1.5 rounded border text-xs"
+                  style={{
+                    background: "var(--background)",
+                    borderColor: "var(--border)",
+                    color: "var(--foreground)",
+                  }}
+                >
+                  <option value={72}>72 DPI (Screen)</option>
+                  <option value={150}>150 DPI (Standard)</option>
+                  <option value={300}>300 DPI (Print)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Page Range (leave empty for all)
+                </label>
+                <input
+                  type="text"
+                  value={pageRange}
+                  onChange={(e) => setPageRange(e.target.value)}
+                  placeholder={`e.g. 1-3,5 (max ${pdf.pageCount})`}
+                  className="px-2 py-1.5 rounded border text-xs"
+                  style={{
+                    background: "var(--background)",
+                    borderColor: "var(--border)",
+                    color: "var(--foreground)",
+                  }}
+                />
+              </div>
+            </div>
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              {targetCount} page{targetCount !== 1 ? "s" : ""} selected
+            </p>
+          </div>
+
+          <div
+            className="rounded-lg p-3 border text-xs"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-hover)",
+              color: "var(--muted)",
+            }}
+          >
+            <strong>Note:</strong> pdf-lib cannot render PDF pages to images.
+            The &quot;Download as PNG&quot; option creates placeholder images with page dimensions.
+            For actual visual rendering, use the &quot;Extract as Individual PDFs&quot; option to get
+            each page as a separate PDF file, which can be opened in any PDF viewer.
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap pt-2">
+            <ActionButton
+              onClick={extractAsImages}
+              disabled={extracting || targetCount === 0}
+            >
+              <ImageDown className="w-4 h-4" />
+              {extracting ? "Extracting..." : `Download as PNG (${targetCount})`}
+            </ActionButton>
+            <ActionButton
+              onClick={extractAsIndividualPdfs}
+              disabled={extracting || targetCount === 0}
+              variant="secondary"
+            >
+              <Download className="w-4 h-4" />
+              Extract as Individual PDFs
+            </ActionButton>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Page Numbers
+// ---------------------------------------------------------------------------
+
+type NumberPosition =
+  | "bottom-center"
+  | "bottom-left"
+  | "bottom-right"
+  | "top-center"
+  | "top-left"
+  | "top-right";
+
+type NumberFormat = "1" | "Page 1" | "1 of N" | "Page 1 of N";
+
+function formatPageNumber(
+  pageNum: number,
+  totalPages: number,
+  format: NumberFormat
+): string {
+  switch (format) {
+    case "1":
+      return `${pageNum}`;
+    case "Page 1":
+      return `Page ${pageNum}`;
+    case "1 of N":
+      return `${pageNum} of ${totalPages}`;
+    case "Page 1 of N":
+      return `Page ${pageNum} of ${totalPages}`;
+  }
+}
+
+function PageNumbersTab() {
+  const [pdf, setPdf] = useState<PdfFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [position, setPosition] = useState<NumberPosition>("bottom-center");
+  const [fontSize, setFontSize] = useState(12);
+  const [startNumber, setStartNumber] = useState(1);
+  const [numFormat, setNumFormat] = useState<NumberFormat>("1");
+  const [color, setColor] = useState("#000000");
+  const [marginFromEdge, setMarginFromEdge] = useState(30);
+
+  const handleFile = useCallback(async (files: File[]) => {
+    setLoading(true);
+    try {
+      setPdf(await loadPdfFile(files[0]));
+    } catch {
+      alert("Failed to load PDF.");
+    }
+    setLoading(false);
+  }, []);
+
+  const addPageNumbers = async () => {
+    if (!pdf) return;
+    setSaving(true);
+    try {
+      const doc = await PDFDocument.load(pdf.arrayBuffer);
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      const pages = doc.getPages();
+      const { r, g, b } = hexToRgb(color);
+      const totalPages = pages.length;
+
+      pages.forEach((page, i) => {
+        const { width, height } = page.getSize();
+        const pageNum = i + startNumber;
+        const text = formatPageNumber(pageNum, totalPages + startNumber - 1, numFormat);
+        const textWidth = font.widthOfTextAtSize(text, fontSize);
+
+        let x: number;
+        let y: number;
+
+        // Calculate x position
+        if (position.includes("left")) {
+          x = marginFromEdge;
+        } else if (position.includes("right")) {
+          x = width - textWidth - marginFromEdge;
+        } else {
+          x = (width - textWidth) / 2;
+        }
+
+        // Calculate y position
+        if (position.startsWith("top")) {
+          y = height - marginFromEdge - fontSize;
+        } else {
+          y = marginFromEdge;
+        }
+
+        page.drawText(text, {
+          x,
+          y,
+          size: fontSize,
+          font,
+          color: rgb(r, g, b),
+        });
+      });
+
+      const bytes = await doc.save();
+      const name = pdf.name.replace(/\.pdf$/i, "_numbered.pdf");
+      downloadBlob(new Blob([bytes], { type: "application/pdf" }), name);
+    } catch {
+      alert("Failed to add page numbers.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-4 flex-1 overflow-auto p-4">
+      {!pdf ? (
+        <>
+          <UploadZone
+            onFiles={handleFile}
+            label="Drop a PDF to add page numbers"
+          />
+          {loading && (
+            <p className="text-sm" style={{ color: "var(--muted)" }}>
+              Loading...
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <PdfFileBar pdf={pdf} onClear={() => setPdf(null)} />
+
+          <div
+            className="grid grid-cols-2 sm:grid-cols-3 gap-3 rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Position
+              </label>
+              <select
+                value={position}
+                onChange={(e) => setPosition(e.target.value as NumberPosition)}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              >
+                <option value="bottom-center">Bottom Center</option>
+                <option value="bottom-left">Bottom Left</option>
+                <option value="bottom-right">Bottom Right</option>
+                <option value="top-center">Top Center</option>
+                <option value="top-left">Top Left</option>
+                <option value="top-right">Top Right</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Format
+              </label>
+              <select
+                value={numFormat}
+                onChange={(e) => setNumFormat(e.target.value as NumberFormat)}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              >
+                <option value="1">1</option>
+                <option value="Page 1">Page 1</option>
+                <option value="1 of N">1 of N</option>
+                <option value="Page 1 of N">Page 1 of N</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Font Size: {fontSize}px
+              </label>
+              <input
+                type="range"
+                min={8}
+                max={24}
+                value={fontSize}
+                onChange={(e) => setFontSize(Number(e.target.value))}
+                className="w-full accent-[var(--accent)]"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Start Number
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={startNumber}
+                onChange={(e) => setStartNumber(Math.max(1, Number(e.target.value)))}
+                className="px-2 py-1.5 rounded border text-xs"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Color
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                  className="w-8 h-8 rounded border cursor-pointer"
+                  style={{ borderColor: "var(--border)" }}
+                />
+                <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+                  {color}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Margin: {marginFromEdge}pt
+              </label>
+              <input
+                type="range"
+                min={10}
+                max={80}
+                value={marginFromEdge}
+                onChange={(e) => setMarginFromEdge(Number(e.target.value))}
+                className="w-full accent-[var(--accent)]"
+              />
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div
+            className="rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            <p className="text-[10px] uppercase tracking-wide font-semibold mb-2" style={{ color: "var(--muted)" }}>
+              Preview
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {[0, 1, 2].filter((i) => i < pdf.pageCount).map((i) => {
+                const text = formatPageNumber(i + startNumber, pdf.pageCount + startNumber - 1, numFormat);
+                return (
+                  <div
+                    key={i}
+                    className="w-20 h-28 rounded border relative flex items-center justify-center"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--background)",
+                    }}
+                  >
+                    <FileText className="w-5 h-5 opacity-20" />
+                    <span
+                      className="absolute text-[8px] font-medium"
+                      style={{
+                        color,
+                        ...(position.startsWith("top")
+                          ? { top: 4 }
+                          : { bottom: 4 }),
+                        ...(position.includes("left")
+                          ? { left: 4 }
+                          : position.includes("right")
+                          ? { right: 4 }
+                          : { left: "50%", transform: "translateX(-50%)" }),
+                      }}
+                    >
+                      {text}
+                    </span>
+                  </div>
+                );
+              })}
+              {pdf.pageCount > 3 && (
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  ...and {pdf.pageCount - 3} more
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <ActionButton onClick={addPageNumbers} disabled={saving}>
+              <Hash className="w-4 h-4" />
+              {saving ? "Adding..." : "Add Page Numbers"}
+            </ActionButton>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Watermark
+// ---------------------------------------------------------------------------
+
+type WatermarkPosition = "center" | "diagonal" | "top" | "bottom" | "tile";
+
+function WatermarkTab() {
+  const [pdf, setPdf] = useState<PdfFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [text, setText] = useState("CONFIDENTIAL");
+  const [fontSize, setFontSize] = useState(48);
+  const [color, setColor] = useState("#888888");
+  const [opacity, setOpacity] = useState(0.2);
+  const [rotation, setRotation] = useState(-45);
+  const [wmPosition, setWmPosition] = useState<WatermarkPosition>("diagonal");
+  const [repeat, setRepeat] = useState(false);
+
+  const handleFile = useCallback(async (files: File[]) => {
+    setLoading(true);
+    try {
+      setPdf(await loadPdfFile(files[0]));
+    } catch {
+      alert("Failed to load PDF.");
+    }
+    setLoading(false);
+  }, []);
+
+  const addWatermark = async () => {
+    if (!pdf || !text.trim()) return;
+    setSaving(true);
+    try {
+      const doc = await PDFDocument.load(pdf.arrayBuffer);
+      const font = await doc.embedFont(StandardFonts.HelveticaBold);
+      const pages = doc.getPages();
+      const { r, g, b } = hexToRgb(color);
+
+      pages.forEach((page) => {
+        const { width, height } = page.getSize();
+        const textWidth = font.widthOfTextAtSize(text, fontSize);
+
+        if (repeat || wmPosition === "tile") {
+          // Tile watermark across the page
+          const spacingX = textWidth + 60;
+          const spacingY = fontSize * 3;
+          for (let y = -height; y < height * 2; y += spacingY) {
+            for (let x = -width; x < width * 2; x += spacingX) {
+              page.drawText(text, {
+                x,
+                y,
+                size: fontSize,
+                font,
+                color: rgb(r, g, b),
+                opacity,
+                rotate: degrees(rotation),
+              });
+            }
+          }
+        } else {
+          let x: number;
+          let y: number;
+          let rot = rotation;
+
+          switch (wmPosition) {
+            case "diagonal":
+              x = (width - textWidth) / 2;
+              y = height / 2;
+              rot = -45;
+              break;
+            case "center":
+              x = (width - textWidth) / 2;
+              y = height / 2;
+              rot = 0;
+              break;
+            case "top":
+              x = (width - textWidth) / 2;
+              y = height - 60;
+              rot = 0;
+              break;
+            case "bottom":
+              x = (width - textWidth) / 2;
+              y = 40;
+              rot = 0;
+              break;
+            default:
+              x = (width - textWidth) / 2;
+              y = height / 2;
+          }
+
+          page.drawText(text, {
+            x,
+            y,
+            size: fontSize,
+            font,
+            color: rgb(r, g, b),
+            opacity,
+            rotate: degrees(rot),
+          });
+        }
+      });
+
+      const bytes = await doc.save();
+      const name = pdf.name.replace(/\.pdf$/i, "_watermarked.pdf");
+      downloadBlob(new Blob([bytes], { type: "application/pdf" }), name);
+    } catch {
+      alert("Failed to add watermark.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-4 flex-1 overflow-auto p-4">
+      {!pdf ? (
+        <>
+          <UploadZone
+            onFiles={handleFile}
+            label="Drop a PDF to add a watermark"
+          />
+          {loading && (
+            <p className="text-sm" style={{ color: "var(--muted)" }}>
+              Loading...
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <PdfFileBar pdf={pdf} onClear={() => setPdf(null)} />
+
+          <div
+            className="flex flex-col gap-3 rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            {/* Text input */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                Watermark Text
+              </label>
+              <input
+                type="text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Enter watermark text"
+                className="px-3 py-1.5 rounded border text-sm"
+                style={{
+                  background: "var(--background)",
+                  borderColor: "var(--border)",
+                  color: "var(--foreground)",
+                }}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Position
+                </label>
+                <select
+                  value={wmPosition}
+                  onChange={(e) => setWmPosition(e.target.value as WatermarkPosition)}
+                  className="px-2 py-1.5 rounded border text-xs"
+                  style={{
+                    background: "var(--background)",
+                    borderColor: "var(--border)",
+                    color: "var(--foreground)",
+                  }}
+                >
+                  <option value="diagonal">Diagonal</option>
+                  <option value="center">Center</option>
+                  <option value="top">Top</option>
+                  <option value="bottom">Bottom</option>
+                  <option value="tile">Tile (Repeat)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Font Size: {fontSize}px
+                </label>
+                <input
+                  type="range"
+                  min={12}
+                  max={72}
+                  value={fontSize}
+                  onChange={(e) => setFontSize(Number(e.target.value))}
+                  className="w-full accent-[var(--accent)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Opacity: {Math.round(opacity * 100)}%
+                </label>
+                <input
+                  type="range"
+                  min={5}
+                  max={100}
+                  value={Math.round(opacity * 100)}
+                  onChange={(e) => setOpacity(Number(e.target.value) / 100)}
+                  className="w-full accent-[var(--accent)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Rotation: {rotation}deg
+                </label>
+                <input
+                  type="range"
+                  min={-90}
+                  max={90}
+                  value={rotation}
+                  onChange={(e) => setRotation(Number(e.target.value))}
+                  className="w-full accent-[var(--accent)]"
+                  disabled={wmPosition === "diagonal"}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Color
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    className="w-8 h-8 rounded border cursor-pointer"
+                    style={{ borderColor: "var(--border)" }}
+                  />
+                  <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+                    {color}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted)" }}>
+                  Repeat / Tile
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={repeat || wmPosition === "tile"}
+                    onChange={(e) => setRepeat(e.target.checked)}
+                    disabled={wmPosition === "tile"}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="text-xs">Tile across page</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div
+            className="rounded-lg p-3 border"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+          >
+            <p className="text-[10px] uppercase tracking-wide font-semibold mb-2" style={{ color: "var(--muted)" }}>
+              Preview
+            </p>
+            <div className="flex justify-center">
+              <div
+                className="w-40 h-56 rounded border relative overflow-hidden flex items-center justify-center"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--background)",
+                }}
+              >
+                <FileText className="w-10 h-10 opacity-10" />
+                {(repeat || wmPosition === "tile") ? (
+                  <div
+                    className="absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden"
+                  >
+                    {Array.from({ length: 5 }).map((_, row) => (
+                      <div key={row} className="flex gap-4">
+                        {Array.from({ length: 3 }).map((_, col) => (
+                          <span
+                            key={col}
+                            className="text-[8px] font-bold whitespace-nowrap"
+                            style={{
+                              color,
+                              opacity,
+                              transform: `rotate(${wmPosition === "diagonal" ? -45 : rotation}deg)`,
+                            }}
+                          >
+                            {text}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span
+                    className="absolute text-[10px] font-bold whitespace-nowrap"
+                    style={{
+                      color,
+                      opacity,
+                      transform: `rotate(${wmPosition === "diagonal" ? -45 : rotation}deg)`,
+                      ...(wmPosition === "top"
+                        ? { top: 12 }
+                        : wmPosition === "bottom"
+                        ? { bottom: 12 }
+                        : {}),
+                    }}
+                  >
+                    {text}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <ActionButton onClick={addWatermark} disabled={saving || !text.trim()}>
+              <Droplets className="w-4 h-4" />
+              {saving ? "Adding..." : "Add Watermark"}
             </ActionButton>
           </div>
         </>
@@ -1292,41 +2460,20 @@ function InfoTab() {
         </>
       ) : (
         <>
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 border"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface)",
+          <PdfFileBar
+            pdf={pdf}
+            onClear={() => {
+              setPdf(null);
+              setMeta({
+                title: "",
+                author: "",
+                subject: "",
+                creator: "",
+                producer: "",
+                version: "",
+              });
             }}
-          >
-            <FileText
-              className="w-5 h-5 shrink-0"
-              style={{ color: "var(--accent)" }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{pdf.name}</p>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                {pdf.pageCount} pages &middot; {formatBytes(pdf.size)}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setPdf(null);
-                setMeta({
-                  title: "",
-                  author: "",
-                  subject: "",
-                  creator: "",
-                  producer: "",
-                  version: "",
-                });
-              }}
-              className="p-1 rounded"
-              style={{ color: "var(--muted)" }}
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          />
 
           <div
             className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-lg p-4 border"
@@ -1420,6 +2567,14 @@ export default function PdfToolkitPage() {
         return <ReorderTab />;
       case "extract":
         return <ExtractTab />;
+      case "images-to-pdf":
+        return <ImagesToPdfTab />;
+      case "pdf-to-images":
+        return <PdfToImagesTab />;
+      case "page-numbers":
+        return <PageNumbersTab />;
+      case "watermark":
+        return <WatermarkTab />;
       case "info":
         return <InfoTab />;
     }
@@ -1463,7 +2618,7 @@ export default function PdfToolkitPage() {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap"
             style={{
               background:
                 activeTab === tab.key ? "var(--accent)" : "transparent",
