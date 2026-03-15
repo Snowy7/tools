@@ -4,6 +4,7 @@ import {
   GitCompare, Grid3x3, Smile, Code, Film, Smartphone,
   Layers, Box, FileCode, Hash, Image as ImageIcon, Pipette,
   Table, Square, Clock, Timer, FileText, TextCursorInput,
+  FileImage, Compass, Scaling, Send, SwatchBook, Grid2x2,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -241,5 +242,49 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     href: "/lorem-generator",
     audience: "content",
     icon: <TextCursorInput size={28} strokeWidth={1.5} />,
+  },
+
+  // ── New tools (batch 9-10) ──
+  {
+    name: "SVG Cleanup Studio",
+    description: "Optimize, minify, recolor, and clean up SVG files with live preview",
+    href: "/svg-cleanup",
+    audience: "design",
+    icon: <FileImage size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Normal Map Generator",
+    description: "Generate normal maps from textures using Sobel operator for game lighting",
+    href: "/normal-map-generator",
+    audience: "gamedev",
+    icon: <Compass size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Image Resizer",
+    description: "Batch resize images with social media presets, aspect ratio lock, and crop modes",
+    href: "/image-resizer",
+    audience: "content",
+    icon: <Scaling size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "API Tester",
+    description: "Lightweight Postman-style API request builder with headers, auth, and response viewer",
+    href: "/api-tester",
+    audience: "developer",
+    icon: <Send size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Palette Swap",
+    description: "Remap sprite colors to create palette variants for game characters and assets",
+    href: "/palette-swap",
+    audience: "gamedev",
+    icon: <SwatchBook size={28} strokeWidth={1.5} />,
+  },
+  {
+    name: "Pixel Font Builder",
+    description: "Draw bitmap pixel fonts on a grid and export as atlas PNG with metadata",
+    href: "/pixel-font-builder",
+    audience: "gamedev",
+    icon: <Grid2x2 size={28} strokeWidth={1.5} />,
   },
 ];
