@@ -34,6 +34,11 @@ interface Settings {
   bgImageUrl: string | null;
   bgImageFile: File | null;
   smoothEdges: boolean;
+  // Mask refinement
+  alphaThreshold: number;    // 0-255, pixels below this alpha become fully transparent
+  edgeFeather: number;       // 0-10px, blur radius on the alpha mask
+  maskContrast: number;      // 0.5-3.0, sharpens or softens the mask edge
+  foregroundBoost: boolean;  // boost the foreground alpha to reduce semi-transparent halos
 }
 
 // ── Helpers ──
@@ -80,7 +85,12 @@ export default function BackgroundRemoverPage() {
     bgImageUrl: null,
     bgImageFile: null,
     smoothEdges: false,
+    alphaThreshold: 0,
+    edgeFeather: 0,
+    maskContrast: 1.0,
+    foregroundBoost: false,
   });
+  const [refinedResultUrl, setRefinedResultUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgImageInputRef = useRef<HTMLInputElement>(null);
@@ -226,9 +236,98 @@ export default function BackgroundRemoverPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [cleanupUrls, settings.bgImageUrl]);
 
-  // Build final canvas with settings applied, then trigger download or return blob
+  // Apply mask refinement to generate a live preview
+  const applyMaskRefinement = useCallback((resultBlob: Blob, s: Settings): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d")!;
+
+        // Apply edge feather via blur if needed
+        if (s.edgeFeather > 0) {
+          ctx.filter = `blur(${s.edgeFeather}px)`;
+        }
+        ctx.drawImage(img, 0, 0);
+        ctx.filter = "none";
+
+        // Manipulate alpha channel pixel by pixel
+        if (s.alphaThreshold > 0 || s.maskContrast !== 1.0 || s.foregroundBoost) {
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const d = imageData.data;
+          for (let i = 3; i < d.length; i += 4) {
+            let a = d[i];
+
+            // Alpha threshold: kill low-alpha pixels
+            if (a < s.alphaThreshold) {
+              a = 0;
+            } else if (s.alphaThreshold > 0) {
+              // Remap remaining range to 0-255
+              a = Math.round(((a - s.alphaThreshold) / (255 - s.alphaThreshold)) * 255);
+            }
+
+            // Mask contrast: push alpha toward 0 or 255
+            if (s.maskContrast !== 1.0) {
+              const normalized = a / 255;
+              const contrasted = Math.pow(normalized, 1 / s.maskContrast);
+              a = Math.round(Math.min(255, Math.max(0, contrasted * 255)));
+            }
+
+            // Foreground boost: push semi-transparent pixels toward fully opaque
+            if (s.foregroundBoost && a > 20) {
+              a = Math.round(Math.min(255, a * 1.5));
+            }
+
+            d[i] = a;
+          }
+          ctx.putImageData(imageData, 0, 0);
+        }
+
+        // If smooth edges, redraw the original on top using source-in to sharpen subject
+        if (s.smoothEdges && s.edgeFeather > 0) {
+          ctx.globalCompositeOperation = "source-in";
+          ctx.filter = "none";
+          ctx.drawImage(img, 0, 0);
+          ctx.globalCompositeOperation = "source-over";
+        }
+
+        const url = canvas.toDataURL("image/png");
+        URL.revokeObjectURL(img.src);
+        resolve(url);
+      };
+      img.src = URL.createObjectURL(resultBlob);
+    });
+  }, []);
+
+  // Re-apply refinement when mask settings change
+  useEffect(() => {
+    if (state.kind !== "result") return;
+    const needsRefinement = settings.alphaThreshold > 0 || settings.edgeFeather > 0 ||
+      settings.maskContrast !== 1.0 || settings.foregroundBoost || settings.smoothEdges;
+
+    if (!needsRefinement) {
+      if (refinedResultUrl) {
+        setRefinedResultUrl(null);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    applyMaskRefinement(state.resultBlob, settings).then((url) => {
+      if (!cancelled) setRefinedResultUrl(url);
+    });
+    return () => { cancelled = true; };
+  }, [state, settings.alphaThreshold, settings.edgeFeather, settings.maskContrast,
+      settings.foregroundBoost, settings.smoothEdges, applyMaskRefinement]);
+
+  // Build final canvas: apply mask refinement + background replacement for export
   const buildFinalCanvas = useCallback(
     async (resultBlob: Blob): Promise<HTMLCanvasElement> => {
+      // First apply mask refinement
+      const refinedUrl = await applyMaskRefinement(resultBlob, settings);
+
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -237,75 +336,41 @@ export default function BackgroundRemoverPage() {
           canvas.height = img.naturalHeight;
           const ctx = canvas.getContext("2d")!;
 
-          // Apply edge smoothing via slight blur on the alpha channel
-          if (settings.smoothEdges) {
-            ctx.filter = "blur(1px)";
-            ctx.drawImage(img, 0, 0);
-            ctx.filter = "none";
-            // Re-draw with full opacity on top to preserve sharpness of subject
-            ctx.globalCompositeOperation = "source-in";
-            ctx.drawImage(img, 0, 0);
-            ctx.globalCompositeOperation = "source-over";
-          }
-
           // Background replacement
           if (settings.bgReplace === "color") {
-            // Draw color background, then composite the result on top
-            const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
-            const tempCtx = tempCanvas.getContext("2d")!;
-            tempCtx.fillStyle = settings.bgColor;
-            tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-            if (settings.smoothEdges) {
-              tempCtx.drawImage(canvas, 0, 0);
-            } else {
-              tempCtx.drawImage(img, 0, 0);
-            }
-            resolve(tempCanvas);
+            ctx.fillStyle = settings.bgColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas);
             return;
           }
 
           if (settings.bgReplace === "image" && settings.bgImageUrl) {
             const bgImg = new Image();
             bgImg.onload = () => {
-              const tempCanvas = document.createElement("canvas");
-              tempCanvas.width = canvas.width;
-              tempCanvas.height = canvas.height;
-              const tempCtx = tempCanvas.getContext("2d")!;
-              // Cover-fit the background image
               const scale = Math.max(canvas.width / bgImg.naturalWidth, canvas.height / bgImg.naturalHeight);
               const w = bgImg.naturalWidth * scale;
               const h = bgImg.naturalHeight * scale;
-              tempCtx.drawImage(bgImg, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
-              if (settings.smoothEdges) {
-                tempCtx.drawImage(canvas, 0, 0);
-              } else {
-                tempCtx.drawImage(img, 0, 0);
-              }
-              resolve(tempCanvas);
+              ctx.drawImage(bgImg, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+              ctx.drawImage(img, 0, 0);
+              resolve(canvas);
             };
             bgImg.onerror = () => {
-              // Fallback: just use transparent result
-              if (!settings.smoothEdges) {
-                ctx.drawImage(img, 0, 0);
-              }
+              ctx.drawImage(img, 0, 0);
               resolve(canvas);
             };
             bgImg.src = settings.bgImageUrl;
             return;
           }
 
-          // Transparent background (default)
-          if (!settings.smoothEdges) {
-            ctx.drawImage(img, 0, 0);
-          }
+          // Transparent
+          ctx.drawImage(img, 0, 0);
           resolve(canvas);
         };
-        img.src = URL.createObjectURL(resultBlob);
+        img.src = refinedUrl;
       });
     },
-    [settings],
+    [settings, applyMaskRefinement],
   );
 
   const downloadResult = useCallback(
@@ -545,9 +610,9 @@ export default function BackgroundRemoverPage() {
                 updateSliderPosition(e.touches[0].clientX);
               }}
             >
-              {/* After (result) - base layer */}
+              {/* After (result) - base layer, uses refined version if mask settings active */}
               <img
-                src={state.resultUrl}
+                src={refinedResultUrl || state.resultUrl}
                 alt="Result with background removed"
                 className="w-full block max-h-[65vh] object-contain"
                 draggable={false}
@@ -842,31 +907,94 @@ export default function BackgroundRemoverPage() {
                     </div>
                   </div>
 
-                  {/* Edge Refinement */}
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-medium">Edge Refinement</label>
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <button
-                        role="switch"
-                        aria-checked={settings.smoothEdges}
-                        onClick={() =>
-                          setSettings((s) => ({ ...s, smoothEdges: !s.smoothEdges }))
-                        }
-                        className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors duration-200 cursor-pointer ${
-                          settings.smoothEdges ? "bg-[var(--accent)]" : "bg-[var(--border)]"
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 mt-0.5 ${
-                            settings.smoothEdges ? "translate-x-5 ml-0.5" : "translate-x-0.5"
-                          }`}
-                        />
-                      </button>
-                      <span className="text-sm">Smooth edges</span>
+                  {/* Mask Refinement */}
+                  <div className="flex flex-col gap-3 sm:col-span-2">
+                    <label className="text-sm font-medium flex items-center gap-2">
+                      <Scissors size={14} />
+                      Mask Refinement
                     </label>
-                    <p className="text-xs text-[var(--muted)]">
-                      Applies a subtle feather to the alpha mask for softer edges
+                    <p className="text-xs text-[var(--muted)] -mt-1">
+                      Adjust these to clean up the AI mask — remove halos, sharpen edges, or fine-tune transparency.
                     </p>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {/* Alpha Threshold */}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium flex items-center justify-between">
+                          Alpha Threshold
+                          <span className="text-[var(--muted)] font-normal tabular-nums">{settings.alphaThreshold}</span>
+                        </label>
+                        <input type="range" min={0} max={200} value={settings.alphaThreshold}
+                          onChange={(e) => setSettings((s) => ({ ...s, alphaThreshold: Number(e.target.value) }))}
+                          className="w-full accent-[var(--accent)]" />
+                        <p className="text-[10px] text-[var(--muted)]">Remove semi-transparent halos. Higher = more aggressive.</p>
+                      </div>
+
+                      {/* Edge Feather */}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium flex items-center justify-between">
+                          Edge Feather
+                          <span className="text-[var(--muted)] font-normal tabular-nums">{settings.edgeFeather}px</span>
+                        </label>
+                        <input type="range" min={0} max={10} step={0.5} value={settings.edgeFeather}
+                          onChange={(e) => setSettings((s) => ({ ...s, edgeFeather: Number(e.target.value) }))}
+                          className="w-full accent-[var(--accent)]" />
+                        <p className="text-[10px] text-[var(--muted)]">Soften edges. Good for compositing onto new backgrounds.</p>
+                      </div>
+
+                      {/* Mask Contrast */}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium flex items-center justify-between">
+                          Mask Contrast
+                          <span className="text-[var(--muted)] font-normal tabular-nums">{settings.maskContrast.toFixed(1)}x</span>
+                        </label>
+                        <input type="range" min={0.5} max={3} step={0.1} value={settings.maskContrast}
+                          onChange={(e) => setSettings((s) => ({ ...s, maskContrast: Number(e.target.value) }))}
+                          className="w-full accent-[var(--accent)]" />
+                        <p className="text-[10px] text-[var(--muted)]">Push edges toward sharp cutout (&gt;1) or softer blend (&lt;1).</p>
+                      </div>
+
+                      {/* Foreground Boost + Smooth Edges */}
+                      <div className="flex flex-col gap-2">
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <button role="switch" aria-checked={settings.foregroundBoost}
+                            onClick={() => setSettings((s) => ({ ...s, foregroundBoost: !s.foregroundBoost }))}
+                            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200 cursor-pointer ${
+                              settings.foregroundBoost ? "bg-[var(--accent)]" : "bg-[var(--border)]"
+                            }`}>
+                            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform duration-200 mt-0.5 ${
+                              settings.foregroundBoost ? "translate-x-4 ml-0.5" : "translate-x-0.5"
+                            }`} />
+                          </button>
+                          <span className="text-xs font-medium">Foreground boost</span>
+                        </label>
+                        <p className="text-[10px] text-[var(--muted)] ml-12 -mt-1">Push semi-transparent subject pixels toward full opacity.</p>
+
+                        <label className="flex items-center gap-3 cursor-pointer mt-1">
+                          <button role="switch" aria-checked={settings.smoothEdges}
+                            onClick={() => setSettings((s) => ({ ...s, smoothEdges: !s.smoothEdges }))}
+                            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200 cursor-pointer ${
+                              settings.smoothEdges ? "bg-[var(--accent)]" : "bg-[var(--border)]"
+                            }`}>
+                            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform duration-200 mt-0.5 ${
+                              settings.smoothEdges ? "translate-x-4 ml-0.5" : "translate-x-0.5"
+                            }`} />
+                          </button>
+                          <span className="text-xs font-medium">Smooth edges</span>
+                        </label>
+                        <p className="text-[10px] text-[var(--muted)] ml-12 -mt-1">Re-composite sharp subject onto feathered mask.</p>
+                      </div>
+                    </div>
+
+                    {/* Reset refinement */}
+                    {(settings.alphaThreshold > 0 || settings.edgeFeather > 0 || settings.maskContrast !== 1.0 || settings.foregroundBoost || settings.smoothEdges) && (
+                      <button
+                        onClick={() => setSettings((s) => ({ ...s, alphaThreshold: 0, edgeFeather: 0, maskContrast: 1.0, foregroundBoost: false, smoothEdges: false }))}
+                        className="text-xs text-[var(--accent)] hover:underline cursor-pointer self-start"
+                      >
+                        Reset all refinement
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
