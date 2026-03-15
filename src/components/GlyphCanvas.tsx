@@ -3,16 +3,9 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { BRUSHES, type BrushConfig, type StrokeData } from "@/lib/font-utils";
 
-interface GlyphCanvasProps {
-  char: string;
-  size?: number;
-  initialStrokes?: StrokeData[];
-  initialImage?: string;
-  onChange?: (strokes: StrokeData[], preview: string) => void;
-  readOnly?: boolean;
-}
-
-// SVG icons for each brush
+// ---------------------------------------------------------------------------
+// SVG icons for each brush (inline definitions)
+// ---------------------------------------------------------------------------
 const BRUSH_ICONS: Record<string, React.ReactNode> = {
   pen: (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -57,6 +50,40 @@ const BRUSH_ICONS: Record<string, React.ReactNode> = {
   ),
 };
 
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+interface GlyphCanvasProps {
+  char: string;
+  size?: number;
+  initialStrokes?: StrokeData[];
+  initialImage?: string;
+  onChange?: (strokes: StrokeData[], preview: string) => void;
+  readOnly?: boolean;
+  /** Toggle metric guide-line visibility */
+  showGuides?: boolean;
+  /** Ghost reference character to trace over */
+  ghostChar?: string;
+  /** Font family used to render the ghost character */
+  ghostFont?: string;
+  /** Opacity of the ghost overlay (0-1) */
+  ghostOpacity?: number;
+  /** Font metric ratios (0-1) controlling guide positions */
+  ascender?: number;
+  capHeight?: number;
+  xHeight?: number;
+  baseline?: number;
+  descender?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Constant: left-margin width reserved for guide labels (in canvas px)
+// ---------------------------------------------------------------------------
+const MARGIN = 48;
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 export default function GlyphCanvas({
   char,
   size = 600,
@@ -64,6 +91,15 @@ export default function GlyphCanvas({
   initialImage,
   onChange,
   readOnly = false,
+  showGuides = true,
+  ghostChar,
+  ghostFont = "serif",
+  ghostOpacity = 0.12,
+  ascender = 0.15,
+  capHeight = 0.25,
+  xHeight = 0.42,
+  baseline = 0.75,
+  descender = 0.9,
 }: GlyphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [strokes, setStrokes] = useState<StrokeData[]>(initialStrokes);
@@ -88,10 +124,14 @@ export default function GlyphCanvas({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [showBrushMenu]);
 
+  // Load optional background image
   useEffect(() => {
     if (initialImage) {
       const img = new Image();
-      img.onload = () => { bgImageRef.current = img; setBgImageLoaded(true); };
+      img.onload = () => {
+        bgImageRef.current = img;
+        setBgImageLoaded(true);
+      };
       img.src = initialImage;
     } else {
       bgImageRef.current = null;
@@ -99,6 +139,100 @@ export default function GlyphCanvas({
     }
   }, [initialImage]);
 
+  // --------------------------------------------------
+  // Guides drawing
+  // --------------------------------------------------
+  const drawGuides = useCallback(
+    (ctx: CanvasRenderingContext2D, s: number) => {
+      if (!showGuides) return;
+      ctx.save();
+
+      const guides: { ratio: number; label: string }[] = [
+        { ratio: ascender, label: "asc" },
+        { ratio: capHeight, label: "cap" },
+        { ratio: xHeight, label: "x" },
+        { ratio: baseline, label: "base" },
+        { ratio: descender, label: "desc" },
+      ];
+
+      // Faint guide lines – only extend from the margin to the right edge
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([]);
+      for (const g of guides) {
+        const y = Math.round(s * g.ratio) + 0.5;
+        ctx.strokeStyle = "rgba(180,190,210,0.25)";
+        ctx.beginPath();
+        ctx.moveTo(MARGIN, y);
+        ctx.lineTo(s, y);
+        ctx.stroke();
+      }
+
+      // Tiny labels in the left margin
+      ctx.font = `500 ${Math.round(s * 0.016)}px ui-monospace, SFMono-Regular, monospace`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(140,150,170,0.45)";
+      for (const g of guides) {
+        const y = s * g.ratio;
+        ctx.fillText(g.label, MARGIN - 6, y);
+      }
+
+      // Faint vertical margin separator
+      ctx.strokeStyle = "rgba(180,190,210,0.15)";
+      ctx.beginPath();
+      ctx.moveTo(MARGIN + 0.5, 0);
+      ctx.lineTo(MARGIN + 0.5, s);
+      ctx.stroke();
+
+      // Character reference (subtle, bottom-right)
+      ctx.fillStyle = "rgba(209,213,219,0.4)";
+      ctx.font = `${s * 0.06}px system-ui, sans-serif`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(char, s - 10, s - 10);
+
+      ctx.setLineDash([]);
+      ctx.restore();
+    },
+    [showGuides, ascender, capHeight, xHeight, baseline, descender, char],
+  );
+
+  // --------------------------------------------------
+  // Ghost character overlay
+  // --------------------------------------------------
+  const drawGhost = useCallback(
+    (ctx: CanvasRenderingContext2D, s: number) => {
+      if (!ghostChar) return;
+      ctx.save();
+      ctx.globalAlpha = ghostOpacity;
+
+      // Compute vertical positioning: place the ghost so its typographic
+      // baseline aligns with the baseline guide and cap-height with the cap guide.
+      const drawAreaLeft = MARGIN;
+      const drawAreaWidth = s - MARGIN;
+      const baseY = s * baseline;
+
+      // Choose a font size so cap-height to baseline span ≈ the guide distance
+      const capY = s * capHeight;
+      const metricsSpan = baseY - capY;
+      // Approximate: for most fonts, cap-height ≈ 0.7 * fontSize
+      const fontSize = metricsSpan / 0.7;
+
+      ctx.font = `${fontSize}px ${ghostFont}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = "#000000";
+      ctx.fillText(ghostChar, drawAreaLeft + drawAreaWidth / 2, baseY);
+
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    },
+    [ghostChar, ghostFont, ghostOpacity, baseline, capHeight],
+  );
+
+  // --------------------------------------------------
+  // Full redraw
+  // --------------------------------------------------
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -109,15 +243,24 @@ export default function GlyphCanvas({
 
     if (bgImageRef.current) ctx.drawImage(bgImageRef.current, 0, 0, size, size);
 
-    drawGuides(ctx, size, char);
+    drawGuides(ctx, size);
+    drawGhost(ctx, size);
 
     const allStrokes = currentStroke ? [...strokes, currentStroke] : strokes;
     for (const stroke of allStrokes) renderStroke(ctx, stroke);
-  }, [strokes, currentStroke, size, char, bgImageLoaded]);
+  }, [strokes, currentStroke, size, bgImageLoaded, drawGuides, drawGhost]);
 
-  useEffect(() => { redraw(); }, [redraw]);
-  useEffect(() => { setStrokes(initialStrokes); }, [initialStrokes]);
+  useEffect(() => {
+    redraw();
+  }, [redraw]);
 
+  useEffect(() => {
+    setStrokes(initialStrokes);
+  }, [initialStrokes]);
+
+  // --------------------------------------------------
+  // Pointer helpers
+  // --------------------------------------------------
   function getPos(e: React.PointerEvent) {
     const rect = canvasRef.current!.getBoundingClientRect();
     return {
@@ -132,7 +275,10 @@ export default function GlyphCanvas({
     e.preventDefault();
     setIsDrawing(true);
     const pos = getPos(e);
-    if (tool === "eraser") { eraseAt(pos, strokes); return; }
+    if (tool === "eraser") {
+      eraseAt(pos, strokes);
+      return;
+    }
     setCurrentStroke({ points: [pos], width: brushSize, brushId: activeBrush.id });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
@@ -140,7 +286,10 @@ export default function GlyphCanvas({
   function handlePointerMove(e: React.PointerEvent) {
     if (!isDrawing || readOnly) return;
     const pos = getPos(e);
-    if (tool === "eraser") { eraseAt(pos, strokes); return; }
+    if (tool === "eraser") {
+      eraseAt(pos, strokes);
+      return;
+    }
     if (currentStroke) setCurrentStroke({ ...currentStroke, points: [...currentStroke.points, pos] });
   }
 
@@ -153,7 +302,10 @@ export default function GlyphCanvas({
   function handlePointerUp() {
     if (!isDrawing) return;
     setIsDrawing(false);
-    if (tool === "eraser") { emitChange(strokes); return; }
+    if (tool === "eraser") {
+      emitChange(strokes);
+      return;
+    }
     if (currentStroke && currentStroke.points.length > 1) {
       const ns = [...strokes, currentStroke];
       setStrokes(ns);
@@ -168,7 +320,8 @@ export default function GlyphCanvas({
     if (!onChange) return;
     requestAnimationFrame(() => {
       const pc = document.createElement("canvas");
-      pc.width = size; pc.height = size;
+      pc.width = size;
+      pc.height = size;
       const pctx = pc.getContext("2d")!;
       pctx.fillStyle = "#ffffff";
       pctx.fillRect(0, 0, size, size);
@@ -178,48 +331,86 @@ export default function GlyphCanvas({
     });
   }
 
-  function handleClear() { setStrokes([]); setCurrentStroke(null); emitChange([]); }
-  function handleUndo() { const ns = strokes.slice(0, -1); setStrokes(ns); emitChange(ns); }
+  function handleClear() {
+    setStrokes([]);
+    setCurrentStroke(null);
+    emitChange([]);
+  }
 
+  function handleUndo() {
+    const ns = strokes.slice(0, -1);
+    setStrokes(ns);
+    emitChange(ns);
+  }
+
+  // --------------------------------------------------
+  // Render a small preview stroke for the brush dropdown
+  // --------------------------------------------------
+  function renderBrushPreview(brush: BrushConfig): React.ReactNode {
+    return (
+      <canvas
+        width={60}
+        height={18}
+        className="flex-shrink-0"
+        ref={(cvs) => {
+          if (!cvs) return;
+          const ctx = cvs.getContext("2d")!;
+          ctx.clearRect(0, 0, 60, 18);
+          const fakePoints = Array.from({ length: 20 }, (_, i) => ({
+            x: 4 + (i / 19) * 52,
+            y: 9 + Math.sin(i * 0.6) * 3,
+            pressure: 0.3 + Math.sin(i * 0.4) * 0.3,
+          }));
+          renderStroke(ctx, { points: fakePoints, width: Math.min(brush.maxWidth, 4), brushId: brush.id });
+        }}
+      />
+    );
+  }
+
+  // --------------------------------------------------
+  // JSX
+  // --------------------------------------------------
   return (
-    <div className="flex flex-col gap-0">
+    <div className="flex flex-col max-w-[400px] w-full">
       {/* Toolbar */}
       {!readOnly && (
-        <div className="flex items-center gap-1.5 p-2 bg-[var(--surface)] border border-[var(--border)] border-b-0 rounded-t-xl">
-          {/* Brush picker */}
+        <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-50 border border-neutral-200 border-b-0 rounded-t-lg">
+          {/* Brush dropdown */}
           <div className="relative" ref={brushMenuRef}>
             <button
               onClick={() => setShowBrushMenu(!showBrushMenu)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all ${
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
                 tool === "brush"
-                  ? "bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/30"
-                  : "bg-[var(--background)] border border-[var(--border)] hover:border-[var(--accent)]/30"
+                  ? "bg-white text-neutral-800 shadow-sm border border-neutral-200"
+                  : "text-neutral-500 hover:text-neutral-700 hover:bg-white/60"
               }`}
             >
-              <span className="opacity-80">{BRUSH_ICONS[activeBrush.id]}</span>
+              <span className="opacity-70">{BRUSH_ICONS[activeBrush.id]}</span>
               <span>{activeBrush.name}</span>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="opacity-40">
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="opacity-30 ml-0.5">
                 <path d="M6 9l6 6 6-6" />
               </svg>
             </button>
 
             {showBrushMenu && (
-              <div className="absolute top-full left-0 mt-1 w-48 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-xl z-20 py-1 overflow-hidden">
+              <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-neutral-200 rounded-lg shadow-lg z-20 py-0.5 overflow-hidden">
                 {BRUSHES.map((b) => (
                   <button
                     key={b.id}
-                    onClick={() => { setActiveBrush(b); setTool("brush"); setShowBrushMenu(false); }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors ${
+                    onClick={() => {
+                      setActiveBrush(b);
+                      setTool("brush");
+                      setShowBrushMenu(false);
+                    }}
+                    className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-left transition-colors ${
                       activeBrush.id === b.id && tool === "brush"
-                        ? "bg-[var(--accent)]/10 text-[var(--accent)]"
-                        : "hover:bg-[var(--surface-hover)]"
+                        ? "bg-neutral-100 text-neutral-900"
+                        : "hover:bg-neutral-50 text-neutral-600"
                     }`}
                   >
-                    <span className="opacity-70 flex-shrink-0">{BRUSH_ICONS[b.id]}</span>
-                    <span className="flex-1">{b.name}</span>
-                    {b.pressureSensitive && (
-                      <span className="text-[9px] text-[var(--muted)] bg-[var(--background)] px-1 py-0.5 rounded">pressure</span>
-                    )}
+                    <span className="opacity-60 flex-shrink-0">{BRUSH_ICONS[b.id]}</span>
+                    <span className="flex-1 font-medium">{b.name}</span>
+                    {renderBrushPreview(b)}
                   </button>
                 ))}
               </div>
@@ -229,46 +420,56 @@ export default function GlyphCanvas({
           {/* Eraser */}
           <button
             onClick={() => setTool(tool === "eraser" ? "brush" : "eraser")}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all ${
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
               tool === "eraser"
-                ? "bg-red-500/10 text-red-500 border border-red-500/30"
-                : "bg-[var(--background)] border border-[var(--border)] hover:border-red-400/30"
+                ? "bg-red-50 text-red-600 shadow-sm border border-red-200"
+                : "text-neutral-500 hover:text-neutral-700 hover:bg-white/60"
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
               <path d="M22 21H7" /><path d="m5 11 9 9" />
             </svg>
-            <span>Eraser</span>
           </button>
 
-          <div className="w-px h-6 bg-[var(--border)]" />
+          {/* Divider */}
+          <div className="w-px h-5 bg-neutral-200 mx-0.5" />
 
-          {/* Size */}
-          <div className="flex items-center gap-1.5 px-1">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--muted)]">
-              <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="3" />
-            </svg>
-            <input type="range" min={1} max={30} value={brushSize}
+          {/* Size slider */}
+          <div className="flex items-center gap-1 px-0.5">
+            <input
+              type="range"
+              min={1}
+              max={30}
+              value={brushSize}
               onChange={(e) => setBrushSize(Number(e.target.value))}
-              className="w-20 accent-[var(--accent)]" />
-            <span className="text-[11px] text-[var(--muted)] font-mono w-4">{brushSize}</span>
+              className="w-16 h-1 accent-neutral-500 cursor-pointer"
+            />
+            <span className="text-[10px] text-neutral-400 font-mono w-4 text-right tabular-nums">{brushSize}</span>
           </div>
 
           <div className="flex-1" />
 
-          {/* Undo / Clear */}
-          <button onClick={handleUndo} disabled={strokes.length === 0}
-            className="p-1.5 rounded-lg bg-[var(--background)] border border-[var(--border)] hover:bg-[var(--surface-hover)] disabled:opacity-20 transition-opacity"
-            title="Undo">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {/* Undo */}
+          <button
+            onClick={handleUndo}
+            disabled={strokes.length === 0}
+            className="p-1 rounded-md text-neutral-500 hover:bg-white hover:text-neutral-700 disabled:opacity-20 transition-all"
+            title="Undo"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
             </svg>
           </button>
-          <button onClick={handleClear} disabled={strokes.length === 0}
-            className="p-1.5 rounded-lg bg-[var(--background)] border border-[var(--border)] hover:bg-[var(--surface-hover)] text-red-400 disabled:opacity-20 transition-opacity"
-            title="Clear all">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+
+          {/* Clear */}
+          <button
+            onClick={handleClear}
+            disabled={strokes.length === 0}
+            className="p-1 rounded-md text-neutral-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-20 transition-all"
+            title="Clear all"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
             </svg>
           </button>
@@ -280,10 +481,9 @@ export default function GlyphCanvas({
         ref={canvasRef}
         width={size}
         height={size}
-        className={`border border-[var(--border)] touch-none shadow-sm bg-white ${
-          readOnly ? "rounded-xl" : "rounded-b-xl"
+        className={`border border-neutral-200 touch-none bg-white max-w-[400px] w-full aspect-square ${
+          readOnly ? "rounded-lg" : "rounded-b-lg"
         } ${tool === "eraser" ? "cursor-cell" : "cursor-crosshair"}`}
-        style={{ width: 340, height: 340 }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -293,36 +493,9 @@ export default function GlyphCanvas({
   );
 }
 
-function drawGuides(ctx: CanvasRenderingContext2D, s: number, char: string) {
-  ctx.save();
-  ctx.lineWidth = 1;
-  ctx.setLineDash([6, 4]);
-
-  const lines = [
-    { y: s * 0.15, color: "rgba(147,197,253,0.4)", label: "ascender" },
-    { y: s * 0.25, color: "rgba(209,213,219,0.5)", label: "cap" },
-    { y: s * 0.42, color: "rgba(209,213,219,0.6)", label: "x-height" },
-    { y: s * 0.75, color: "rgba(147,197,253,0.5)", label: "baseline" },
-    { y: s * 0.9, color: "rgba(147,197,253,0.3)", label: "descender" },
-  ];
-
-  for (const line of lines) {
-    ctx.strokeStyle = line.color;
-    ctx.beginPath();
-    ctx.moveTo(0, line.y);
-    ctx.lineTo(s, line.y);
-    ctx.stroke();
-  }
-
-  ctx.setLineDash([]);
-  ctx.fillStyle = "rgba(209,213,219,0.5)";
-  ctx.font = `${s * 0.07}px system-ui`;
-  ctx.textAlign = "right";
-  ctx.textBaseline = "bottom";
-  ctx.fillText(char, s - 12, s - 12);
-  ctx.restore();
-}
-
+// ---------------------------------------------------------------------------
+// Brush rendering (unchanged)
+// ---------------------------------------------------------------------------
 function renderStroke(ctx: CanvasRenderingContext2D, stroke: StrokeData) {
   const brush = BRUSHES.find((b) => b.id === stroke.brushId) || BRUSHES[0];
   const { points, width } = stroke;
