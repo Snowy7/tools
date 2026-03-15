@@ -13,6 +13,28 @@ const tools = [
       </svg>
     ),
   },
+  {
+    name: "QR Generator",
+    description: "Create customizable QR codes with colors, logos, styles, and export options",
+    href: "/qr-generator",
+    icon: (
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="2" width="8" height="8" rx="1" /><rect x="14" y="2" width="8" height="8" rx="1" /><rect x="2" y="14" width="8" height="8" rx="1" />
+        <path d="M14 14h2v2h-2z" /><path d="M20 14h2v2h-2z" /><path d="M14 20h2v2h-2z" /><path d="M20 20h2v2h-2z" /><path d="M17 17h2v2h-2z" />
+      </svg>
+    ),
+  },
+  {
+    name: "Background Remover",
+    description: "Remove image backgrounds instantly using AI, right in your browser",
+    href: "/bg-remover",
+    icon: (
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20.83 14.83a4 4 0 0 0 0-5.66l-5-5a4 4 0 0 0-5.66 0L3.83 10.5a4 4 0 0 0 0 5.66l5 5a4 4 0 0 0 5.66 0z" />
+        <path d="m6 12 6 6" /><path d="m18 12-6-6" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Home() {
