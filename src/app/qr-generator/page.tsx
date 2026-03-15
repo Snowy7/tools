@@ -3,6 +3,27 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import QRCode from "qrcode";
+import {
+  ArrowLeft,
+  Download,
+  Copy,
+  Check,
+  QrCode,
+  Wifi,
+  Mail,
+  Phone,
+  MessageSquare,
+  Type,
+  Link as LinkIcon,
+  Upload,
+  Trash2,
+  ChevronDown,
+  Image as ImageIcon,
+  Circle,
+  Square,
+  RectangleHorizontal,
+  Shield,
+} from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -11,6 +32,7 @@ import QRCode from "qrcode";
 type ContentType = "text" | "url" | "wifi" | "email" | "phone" | "sms";
 type QRStyle = "square" | "dots" | "rounded";
 type ErrorLevel = "L" | "M" | "Q" | "H";
+type LogoShape = "square" | "circle" | "rounded";
 
 interface WifiFields {
   ssid: string;
@@ -61,7 +83,9 @@ function buildQRString(
     case "phone":
       return `tel:${phone.number}`;
     case "sms": {
-      const msg = sms.message ? `?body=${encodeURIComponent(sms.message)}` : "";
+      const msg = sms.message
+        ? `?body=${encodeURIComponent(sms.message)}`
+        : "";
       return `sms:${sms.number}${msg}`;
     }
   }
@@ -82,10 +106,12 @@ function useDebounce<T>(value: T, delay: number): T {
 
 function Section({
   title,
+  icon,
   defaultOpen = true,
   children,
 }: {
   title: string;
+  icon?: React.ReactNode;
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
@@ -97,21 +123,15 @@ function Section({
         onClick={() => setOpen((o) => !o)}
         className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium hover:bg-[var(--surface-hover)] transition-colors"
       >
-        {title}
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="transition-transform"
+        <span className="flex items-center gap-2">
+          {icon}
+          {title}
+        </span>
+        <ChevronDown
+          size={16}
+          className="transition-transform duration-200"
           style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        />
       </button>
       {open && <div className="px-4 pb-4 flex flex-col gap-3">{children}</div>}
     </div>
@@ -204,6 +224,103 @@ function Slider({
   );
 }
 
+function TextInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  rows,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+  rows?: number;
+}) {
+  const cls =
+    "w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]";
+  return (
+    <div className="flex flex-col gap-1">
+      <Label>{label}</Label>
+      {rows ? (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={rows}
+          placeholder={placeholder}
+          className={`${cls} resize-none`}
+        />
+      ) : (
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={cls}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content type config
+// ---------------------------------------------------------------------------
+
+const contentTypeConfig: {
+  value: ContentType;
+  label: string;
+  icon: React.ReactNode;
+}[] = [
+  { value: "text", label: "Text", icon: <Type size={14} /> },
+  { value: "url", label: "URL", icon: <LinkIcon size={14} /> },
+  { value: "wifi", label: "WiFi", icon: <Wifi size={14} /> },
+  { value: "email", label: "Email", icon: <Mail size={14} /> },
+  { value: "phone", label: "Phone", icon: <Phone size={14} /> },
+  { value: "sms", label: "SMS", icon: <MessageSquare size={14} /> },
+];
+
+const errorLevels: { value: ErrorLevel; label: string; desc: string }[] = [
+  { value: "L", label: "L", desc: "7%" },
+  { value: "M", label: "M", desc: "15%" },
+  { value: "Q", label: "Q", desc: "25%" },
+  { value: "H", label: "H", desc: "30%" },
+];
+
+const qrStyles: { value: QRStyle; label: string }[] = [
+  { value: "square", label: "Square" },
+  { value: "dots", label: "Dots" },
+  { value: "rounded", label: "Rounded" },
+];
+
+const logoShapes: { value: LogoShape; label: string; icon: React.ReactNode }[] =
+  [
+    { value: "square", label: "Square", icon: <Square size={14} /> },
+    { value: "circle", label: "Circle", icon: <Circle size={14} /> },
+    {
+      value: "rounded",
+      label: "Rounded",
+      icon: <RectangleHorizontal size={14} />,
+    },
+  ];
+
+// ---------------------------------------------------------------------------
+// Checkerboard CSS for transparent background indicator
+// ---------------------------------------------------------------------------
+
+const checkerboardStyle: React.CSSProperties = {
+  backgroundImage: `
+    linear-gradient(45deg, #d0d0d0 25%, transparent 25%),
+    linear-gradient(-45deg, #d0d0d0 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d0d0d0 75%),
+    linear-gradient(-45deg, transparent 75%, #d0d0d0 75%)
+  `,
+  backgroundSize: "16px 16px",
+  backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+};
+
 // ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
@@ -243,6 +360,10 @@ export default function QRGeneratorPage() {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoDataURL, setLogoDataURL] = useState<string | null>(null);
   const [logoSize, setLogoSize] = useState(20);
+  const [logoShape, setLogoShape] = useState<LogoShape>("rounded");
+  const [logoBgColor, setLogoBgColor] = useState("#ffffff");
+  const [logoPadding, setLogoPadding] = useState(10);
+  const [logoOpacity, setLogoOpacity] = useState(100);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -293,8 +414,11 @@ export default function QRGeneratorPage() {
     if (qrStyle === "square") {
       try {
         await QRCode.toCanvas(canvas, qrData, opts);
+        // Force the canvas to be square (toCanvas sets width/height)
+        canvas.width = width;
+        canvas.height = width;
+        await QRCode.toCanvas(canvas, qrData, opts);
       } catch {
-        // invalid data, draw empty
         canvas.width = width;
         canvas.height = width;
         ctx.clearRect(0, 0, width, width);
@@ -341,10 +465,17 @@ export default function QRGeneratorPage() {
             if (qrStyle === "dots") {
               const radius = moduleSize / 2;
               ctx.beginPath();
-              ctx.arc(x + radius, y + radius, radius * 0.85, 0, Math.PI * 2);
+              ctx.arc(
+                x + radius,
+                y + radius,
+                radius * 0.85,
+                0,
+                Math.PI * 2
+              );
               ctx.fill();
             } else if (qrStyle === "rounded") {
-              const r = Math.min(cornerRadius, moduleSize / 2) * (moduleSize / 50);
+              const r =
+                Math.min(cornerRadius, moduleSize / 2) * (moduleSize / 50);
               const clampedR = Math.min(r, moduleSize / 2);
               const s = moduleSize * 0.95;
               const offset = (moduleSize - s) / 2;
@@ -366,14 +497,49 @@ export default function QRGeneratorPage() {
         const lx = (canvas.width - logoW) / 2;
         const ly = (canvas.height - logoH) / 2;
 
-        // White background pad behind logo
-        const pad = logoW * 0.08;
-        ctx.fillStyle = transparentBg ? "#ffffff" : bgColor;
+        // Padding as percentage of logo size
+        const pad = logoW * (logoPadding / 100);
+
+        // Draw background pad with selected shape
+        ctx.fillStyle = logoBgColor;
         ctx.beginPath();
-        ctx.roundRect(lx - pad, ly - pad, logoW + pad * 2, logoH + pad * 2, pad);
+        if (logoShape === "circle") {
+          const rx = (logoW + pad * 2) / 2;
+          const ry = (logoH + pad * 2) / 2;
+          const cx = lx - pad + rx;
+          const cy = ly - pad + ry;
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        } else if (logoShape === "rounded") {
+          const rr = Math.min(logoW + pad * 2, logoH + pad * 2) * 0.15;
+          ctx.roundRect(
+            lx - pad,
+            ly - pad,
+            logoW + pad * 2,
+            logoH + pad * 2,
+            rr
+          );
+        } else {
+          ctx.rect(lx - pad, ly - pad, logoW + pad * 2, logoH + pad * 2);
+        }
         ctx.fill();
 
+        // Clip for the logo image based on shape
+        ctx.save();
+        ctx.globalAlpha = logoOpacity / 100;
+        ctx.beginPath();
+        if (logoShape === "circle") {
+          const rx = logoW / 2;
+          const ry = logoH / 2;
+          ctx.ellipse(lx + rx, ly + ry, rx, ry, 0, 0, Math.PI * 2);
+          ctx.clip();
+        } else if (logoShape === "rounded") {
+          const rr = Math.min(logoW, logoH) * 0.12;
+          ctx.roundRect(lx, ly, logoW, logoH, rr);
+          ctx.clip();
+        }
+
         ctx.drawImage(img, lx, ly, logoW, logoH);
+        ctx.restore();
       };
       img.src = logoDataURL;
     }
@@ -389,6 +555,10 @@ export default function QRGeneratorPage() {
     margin,
     logoDataURL,
     logoSize,
+    logoShape,
+    logoBgColor,
+    logoPadding,
+    logoOpacity,
   ]);
 
   useEffect(() => {
@@ -450,29 +620,19 @@ export default function QRGeneratorPage() {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // Content type tabs
+  // Logo file handler
   // ---------------------------------------------------------------------------
-  const contentTypes: { value: ContentType; label: string }[] = [
-    { value: "text", label: "Text" },
-    { value: "url", label: "URL" },
-    { value: "wifi", label: "WiFi" },
-    { value: "email", label: "Email" },
-    { value: "phone", label: "Phone" },
-    { value: "sms", label: "SMS" },
-  ];
+  const handleLogoUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setLogoFile(e.target.files?.[0] ?? null);
+    },
+    []
+  );
 
-  const errorLevels: { value: ErrorLevel; label: string; desc: string }[] = [
-    { value: "L", label: "L", desc: "7%" },
-    { value: "M", label: "M", desc: "15%" },
-    { value: "Q", label: "Q", desc: "25%" },
-    { value: "H", label: "H", desc: "30%" },
-  ];
-
-  const styles: { value: QRStyle; label: string }[] = [
-    { value: "square", label: "Square" },
-    { value: "dots", label: "Dots" },
-    { value: "rounded", label: "Rounded" },
-  ];
+  const handleLogoRemove = useCallback(() => {
+    setLogoFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -486,126 +646,61 @@ export default function QRGeneratorPage() {
           className="p-1.5 -ml-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
           aria-label="Back to home"
         >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M19 12H5" />
-            <polyline points="12 19 5 12 12 5" />
-          </svg>
+          <ArrowLeft size={20} />
         </Link>
-        <h1 className="text-base font-semibold">QR Generator</h1>
+        <div className="flex items-center gap-2">
+          <QrCode size={20} className="text-[var(--accent)]" />
+          <h1 className="text-base font-semibold">QR Generator</h1>
+        </div>
       </header>
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
         {/* Left panel: Preview */}
         <div className="flex-[3] flex flex-col min-w-0">
-          {/* Checkerboard preview area */}
-          <div
-            className="flex-1 flex items-center justify-center overflow-auto p-8"
-            style={{
-              backgroundImage: `
-                linear-gradient(45deg, var(--border) 25%, transparent 25%),
-                linear-gradient(-45deg, var(--border) 25%, transparent 25%),
-                linear-gradient(45deg, transparent 75%, var(--border) 75%),
-                linear-gradient(-45deg, transparent 75%, var(--border) 75%)
-              `,
-              backgroundSize: "20px 20px",
-              backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
-            }}
-          >
-            <canvas
-              ref={canvasRef}
-              className="max-w-full max-h-full"
-              style={{
-                imageRendering: "pixelated",
-                width: Math.min(width, 500),
-                height: Math.min(width, 500),
-              }}
-            />
+          {/* Preview area */}
+          <div className="flex-1 flex items-center justify-center overflow-auto p-8 bg-[var(--background)]">
+            <div className="relative">
+              {/* Checkerboard behind QR only when transparent bg is on */}
+              {transparentBg && (
+                <div
+                  className="absolute inset-0 rounded-xl"
+                  style={checkerboardStyle}
+                />
+              )}
+              <canvas
+                ref={canvasRef}
+                className="relative aspect-square max-w-full max-h-[60vh] rounded-xl shadow-lg"
+                width={width}
+                height={width}
+                style={{
+                  imageRendering: "pixelated",
+                }}
+              />
+            </div>
           </div>
 
-          {/* Export buttons */}
+          {/* Export bar */}
           <div className="flex items-center gap-2 px-4 py-3 border-t border-[var(--border)] bg-[var(--surface)] shrink-0">
             <button
               onClick={downloadPNG}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
+              <Download size={14} />
               PNG
             </button>
             <button
               onClick={downloadSVG}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
+              <Download size={14} />
               SVG
             </button>
             <button
               onClick={copyToClipboard}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
             >
-              {copied ? (
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
-              )}
+              {copied ? <Check size={14} /> : <Copy size={14} />}
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
@@ -614,66 +709,52 @@ export default function QRGeneratorPage() {
         {/* Right panel: Settings */}
         <div className="flex-[2] border-l border-[var(--border)] bg-[var(--surface)] overflow-y-auto">
           {/* Content */}
-          <Section title="Content" defaultOpen>
+          <Section title="Content" icon={<QrCode size={16} />} defaultOpen>
             <div className="flex flex-wrap gap-1">
-              {contentTypes.map((ct) => (
+              {contentTypeConfig.map((ct) => (
                 <button
                   key={ct.value}
                   onClick={() => setContentType(ct.value)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     contentType === ct.value
                       ? "bg-[var(--accent)] text-white"
                       : "bg-[var(--surface-hover)] text-[var(--foreground)] hover:bg-[var(--border)]"
                   }`}
                 >
+                  {ct.icon}
                   {ct.label}
                 </button>
               ))}
             </div>
 
             {(contentType === "text" || contentType === "url") && (
-              <div className="flex flex-col gap-1">
-                <Label>{contentType === "url" ? "URL" : "Text"}</Label>
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  rows={3}
-                  placeholder={
-                    contentType === "url"
-                      ? "https://example.com"
-                      : "Enter text..."
-                  }
-                  className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                />
-              </div>
+              <TextInput
+                label={contentType === "url" ? "URL" : "Text"}
+                value={text}
+                onChange={setText}
+                placeholder={
+                  contentType === "url"
+                    ? "https://example.com"
+                    : "Enter text..."
+                }
+                rows={3}
+              />
             )}
 
             {contentType === "wifi" && (
               <>
-                <div className="flex flex-col gap-1">
-                  <Label>SSID</Label>
-                  <input
-                    type="text"
-                    value={wifi.ssid}
-                    onChange={(e) =>
-                      setWifi((w) => ({ ...w, ssid: e.target.value }))
-                    }
-                    placeholder="Network name"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label>Password</Label>
-                  <input
-                    type="text"
-                    value={wifi.password}
-                    onChange={(e) =>
-                      setWifi((w) => ({ ...w, password: e.target.value }))
-                    }
-                    placeholder="Password"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
+                <TextInput
+                  label="SSID"
+                  value={wifi.ssid}
+                  onChange={(v) => setWifi((w) => ({ ...w, ssid: v }))}
+                  placeholder="Network name"
+                />
+                <TextInput
+                  label="Password"
+                  value={wifi.password}
+                  onChange={(v) => setWifi((w) => ({ ...w, password: v }))}
+                  placeholder="Password"
+                />
                 <div className="flex flex-col gap-1">
                   <Label>Encryption</Label>
                   <div className="flex gap-2">
@@ -699,86 +780,55 @@ export default function QRGeneratorPage() {
 
             {contentType === "email" && (
               <>
-                <div className="flex flex-col gap-1">
-                  <Label>To</Label>
-                  <input
-                    type="email"
-                    value={email.to}
-                    onChange={(e) =>
-                      setEmail((em) => ({ ...em, to: e.target.value }))
-                    }
-                    placeholder="recipient@example.com"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label>Subject</Label>
-                  <input
-                    type="text"
-                    value={email.subject}
-                    onChange={(e) =>
-                      setEmail((em) => ({ ...em, subject: e.target.value }))
-                    }
-                    placeholder="Subject line"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label>Body</Label>
-                  <textarea
-                    value={email.body}
-                    onChange={(e) =>
-                      setEmail((em) => ({ ...em, body: e.target.value }))
-                    }
-                    rows={2}
-                    placeholder="Email body"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
+                <TextInput
+                  label="To"
+                  value={email.to}
+                  onChange={(v) => setEmail((em) => ({ ...em, to: v }))}
+                  placeholder="recipient@example.com"
+                  type="email"
+                />
+                <TextInput
+                  label="Subject"
+                  value={email.subject}
+                  onChange={(v) => setEmail((em) => ({ ...em, subject: v }))}
+                  placeholder="Subject line"
+                />
+                <TextInput
+                  label="Body"
+                  value={email.body}
+                  onChange={(v) => setEmail((em) => ({ ...em, body: v }))}
+                  placeholder="Email body"
+                  rows={2}
+                />
               </>
             )}
 
             {contentType === "phone" && (
-              <div className="flex flex-col gap-1">
-                <Label>Phone Number</Label>
-                <input
-                  type="tel"
-                  value={phone.number}
-                  onChange={(e) =>
-                    setPhone((p) => ({ ...p, number: e.target.value }))
-                  }
-                  placeholder="+1234567890"
-                  className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                />
-              </div>
+              <TextInput
+                label="Phone Number"
+                value={phone.number}
+                onChange={(v) => setPhone((p) => ({ ...p, number: v }))}
+                placeholder="+1234567890"
+                type="tel"
+              />
             )}
 
             {contentType === "sms" && (
               <>
-                <div className="flex flex-col gap-1">
-                  <Label>Phone Number</Label>
-                  <input
-                    type="tel"
-                    value={sms.number}
-                    onChange={(e) =>
-                      setSms((s) => ({ ...s, number: e.target.value }))
-                    }
-                    placeholder="+1234567890"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label>Message</Label>
-                  <textarea
-                    value={sms.message}
-                    onChange={(e) =>
-                      setSms((s) => ({ ...s, message: e.target.value }))
-                    }
-                    rows={2}
-                    placeholder="Message text"
-                    className="w-full text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--background)] resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                  />
-                </div>
+                <TextInput
+                  label="Phone Number"
+                  value={sms.number}
+                  onChange={(v) => setSms((s) => ({ ...s, number: v }))}
+                  placeholder="+1234567890"
+                  type="tel"
+                />
+                <TextInput
+                  label="Message"
+                  value={sms.message}
+                  onChange={(v) => setSms((s) => ({ ...s, message: v }))}
+                  placeholder="Message text"
+                  rows={2}
+                />
               </>
             )}
           </Section>
@@ -809,7 +859,7 @@ export default function QRGeneratorPage() {
             <div className="flex flex-col gap-1">
               <Label>Style</Label>
               <div className="flex gap-1">
-                {styles.map((s) => (
+                {qrStyles.map((s) => (
                   <button
                     key={s.value}
                     onClick={() => setQrStyle(s.value)}
@@ -837,7 +887,11 @@ export default function QRGeneratorPage() {
           </Section>
 
           {/* Error Correction */}
-          <Section title="Error Correction" defaultOpen={false}>
+          <Section
+            title="Error Correction"
+            icon={<Shield size={16} />}
+            defaultOpen={false}
+          >
             <div className="grid grid-cols-4 gap-1">
               {errorLevels.map((el) => (
                 <button
@@ -886,33 +940,37 @@ export default function QRGeneratorPage() {
           </Section>
 
           {/* Logo */}
-          <Section title="Logo" defaultOpen={false}>
+          <Section
+            title="Logo"
+            icon={<ImageIcon size={16} />}
+            defaultOpen={false}
+          >
             <input
               ref={fileInputRef}
               type="file"
               accept="image/*"
-              onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)}
+              onChange={handleLogoUpload}
               className="hidden"
             />
             <div className="flex items-center gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
               >
+                <Upload size={14} />
                 {logoFile ? "Change Logo" : "Upload Logo"}
               </button>
               {logoFile && (
                 <button
-                  onClick={() => {
-                    setLogoFile(null);
-                    if (fileInputRef.current) fileInputRef.current.value = "";
-                  }}
-                  className="px-3 py-1.5 text-sm text-red-500 font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+                  onClick={handleLogoRemove}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-500 font-medium rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
                 >
+                  <Trash2 size={14} />
                   Remove
                 </button>
               )}
             </div>
+
             {logoFile && (
               <>
                 <div className="flex items-center gap-2">
@@ -927,6 +985,7 @@ export default function QRGeneratorPage() {
                     {logoFile.name}
                   </span>
                 </div>
+
                 <Slider
                   label="Logo Size"
                   value={logoSize}
@@ -935,12 +994,56 @@ export default function QRGeneratorPage() {
                   onChange={setLogoSize}
                   suffix="%"
                 />
+
+                <div className="flex flex-col gap-1">
+                  <Label>Logo Shape</Label>
+                  <div className="flex gap-1">
+                    {logoShapes.map((s) => (
+                      <button
+                        key={s.value}
+                        onClick={() => setLogoShape(s.value)}
+                        className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                          logoShape === s.value
+                            ? "bg-[var(--accent)] text-white"
+                            : "bg-[var(--surface-hover)] text-[var(--foreground)] hover:bg-[var(--border)]"
+                        }`}
+                      >
+                        {s.icon}
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <ColorPicker
+                  label="Logo Background"
+                  value={logoBgColor}
+                  onChange={setLogoBgColor}
+                />
+
+                <Slider
+                  label="Logo Padding"
+                  value={logoPadding}
+                  min={5}
+                  max={30}
+                  onChange={setLogoPadding}
+                  suffix="%"
+                />
+
+                <Slider
+                  label="Logo Opacity"
+                  value={logoOpacity}
+                  min={50}
+                  max={100}
+                  onChange={setLogoOpacity}
+                  suffix="%"
+                />
+
+                <p className="text-[10px] text-[var(--muted)]">
+                  Tip: Use error correction level H (30%) when adding a logo for
+                  best scan reliability.
+                </p>
               </>
-            )}
-            {logoFile && (
-              <p className="text-[10px] text-[var(--muted)]">
-                Tip: Use error correction level H (30%) when adding a logo for best scan reliability.
-              </p>
             )}
           </Section>
         </div>
